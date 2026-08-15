@@ -1,0 +1,260 @@
+name: Release
+
+# Push to main → ensure tag vX.Y.Z + draft GitHub Release, then build
+# Windows + macOS + Linux and upload assets. When all succeed, publish the draft.
+# (Published GitHub releases can be immutable — uploads must go to a draft first.)
+# Manual: Actions → Release → Run workflow.
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Upload artifacts to GitHub Releases'
+        type: boolean
+        default: true
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  NODE_VERSION: '22'
+  # electron-builder must upload into a draft (mutable) release
+  EP_DRAFT: 'true'
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      publish: ${{ steps.meta.outputs.publish }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version / publish flag
+        id: meta
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$(node -p "require('./package.json').version")"
+          fi
+          TAG="v${VERSION}"
+          if [[ "${{ github.event_name }}" == "push" ]] || [[ "${{ inputs.publish }}" == "true" ]]; then
+            PUBLISH=true
+          else
+            PUBLISH=false
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "publish=${PUBLISH}" >> "$GITHUB_OUTPUT"
+          echo "Version ${VERSION} (tag ${TAG}), publish=${PUBLISH}"
+
+      - name: Ensure git tag and draft GitHub Release
+        if: steps.meta.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.meta.outputs.tag }}"
+          VERSION="${{ steps.meta.outputs.version }}"
+
+          # GitHub rejects published releases without an existing tag.
+          if git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists"
+          else
+            git tag "${TAG}" "${GITHUB_SHA}"
+            git push origin "refs/tags/${TAG}"
+            echo "Created tag ${TAG} → ${GITHUB_SHA}"
+          fi
+
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            IS_DRAFT="$(gh release view "${TAG}" --json isDraft -q .isDraft)"
+            if [[ "${IS_DRAFT}" != "true" ]]; then
+              echo "::error::Release ${TAG} already exists and is published (immutable)."
+              echo "That tag name cannot be reused for uploads. Bump package.json version and push again."
+              exit 1
+            fi
+            echo "Draft release ${TAG} already exists"
+          else
+            # Draft stays mutable so Win/macOS/Linux can all upload assets.
+            # Never publish until publish-release — a published tag becomes permanently burned
+            # under GitHub immutable releases and cannot be republished.
+            if ! gh release create "${TAG}" \
+              --title "CustomSSH ${VERSION}" \
+              --generate-notes \
+              --draft \
+              --verify-tag; then
+              echo "::error::Could not create draft ${TAG}."
+              echo "If the tag was used by a deleted immutable release, bump package.json version."
+              exit 1
+            fi
+            echo "Created draft GitHub Release ${TAG}"
+          fi
+
+  windows:
+    needs: prepare
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Sync version
+        shell: bash
+        run: |
+          npm version "${{ needs.prepare.outputs.version }}" --no-git-tag-version --allow-same-version
+
+      - name: Build & publish Windows
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          EP_DRAFT: 'true'
+        shell: bash
+        run: |
+          if [[ "${{ needs.prepare.outputs.publish }}" == "true" ]]; then
+            npm run dist:publish
+          else
+            npm run dist:win
+          fi
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: customssh-windows
+          path: |
+            release/CustomSSH-Setup-*.exe
+            release/CustomSSH-Setup-*.exe.blockmap
+            release/CustomSSH-Portable-*.exe
+            release/latest.yml
+          if-no-files-found: error
+
+  mac:
+    needs: prepare
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Sync version
+        run: |
+          npm version "${{ needs.prepare.outputs.version }}" --no-git-tag-version --allow-same-version
+
+      - name: Build & publish macOS
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          EP_DRAFT: 'true'
+        run: |
+          if [[ "${{ needs.prepare.outputs.publish }}" == "true" ]]; then
+            npm run dist:publish:mac
+          else
+            npm run dist:mac
+          fi
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: customssh-macos
+          path: |
+            release/CustomSSH-*.dmg
+            release/CustomSSH-*.zip
+            release/CustomSSH-*.zip.blockmap
+            release/latest-mac.yml
+          if-no-files-found: error
+
+  linux:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Sync version
+        run: |
+          npm version "${{ needs.prepare.outputs.version }}" --no-git-tag-version --allow-same-version
+
+      - name: Build & publish Linux
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          EP_DRAFT: 'true'
+        run: |
+          if [[ "${{ needs.prepare.outputs.publish }}" == "true" ]]; then
+            npm run dist:publish:linux
+          else
+            npm run dist:linux
+          fi
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: customssh-linux
+          path: |
+            release/CustomSSH-*.AppImage
+            release/CustomSSH-*.deb
+            release/latest-linux.yml
+          if-no-files-found: error
+
+  publish-release:
+    needs: [prepare, windows, mac, linux]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.prepare.outputs.tag }}"
+          REPO="${{ github.repository }}"
+
+          if ! gh release edit "${TAG}" --repo "${REPO}" --draft=false --latest; then
+            echo "::error::Failed to publish ${TAG}."
+            echo "If you see 'tag_name was used by an immutable release', that tag is permanently burned"
+            echo "after an earlier published immutable release. Bump package.json version (new tag) and re-run."
+            echo "Optional: Repo Settings → General → Releases → disable Immutable releases (only for future tags)."
+            exit 1
+          fi
+          echo "Published ${TAG} as the latest release"

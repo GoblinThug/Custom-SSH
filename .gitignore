@@ -1,0 +1,61 @@
+# Dependencies & build outputs
+node_modules/
+dist/
+dist-electron/
+release/
+out/
+*.log
+.DS_Store
+Thumbs.db
+
+# Vite / TypeScript compile leftovers
+.vite/
+.webpack/
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+vite.config.js.map
+
+# Env / secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.ppk
+*.key
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+*.p12
+*.pfx
+
+# Saved SSH sessions / credentials (must never go to GitHub)
+connections.json
+**/connections.json
+*.connections.json
+settings.json
+**/settings.json
+secrets/
+credentials/
+.ssh-keys/
+
+# Local recovery scratch
+_recovered/
+
+# Packaged Electron / installer artifacts
+*.asar
+*.exe
+*.dmg
+*.AppImage
+*.blockmap
+*.snap
+*.deb
+*.rpm
+*.msi
+*.nsis.7z
+latest.yml
+latest-mac.yml
+latest-linux.yml
+builder-debug.yml
+builder-effective-config.yaml
