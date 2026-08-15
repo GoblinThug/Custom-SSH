@@ -14,16 +14,16 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/GoblinThug/CustomSSH/releases/latest"><img src="https://img.shields.io/github/v/release/GoblinThug/CustomSSH?style=for-the-badge&label=Release&color=2ea44f" alt="Release" /></a>
-  <a href="https://github.com/GoblinThug/CustomSSH/releases"><img src="https://img.shields.io/github/downloads/GoblinThug/CustomSSH/total?style=for-the-badge&label=Downloads&color=0969da" alt="Downloads" /></a>
-  <a href="https://github.com/GoblinThug/CustomSSH"><img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-111827?style=for-the-badge&logo=electron&logoColor=white" alt="Platform" /></a>
-  <a href="https://github.com/GoblinThug/CustomSSH"><img src="https://img.shields.io/badge/Stack-Electron%20%2B%20React-0f172a?style=for-the-badge&logo=react&logoColor=61dafb" alt="Stack" /></a>
+  <a href="https://github.com/GoblinThug/Custom-SSH/releases/latest"><img src="https://img.shields.io/github/v/release/GoblinThug/Custom-SSH?style=for-the-badge&label=Release&color=2ea44f" alt="Release" /></a>
+  <a href="https://github.com/GoblinThug/Custom-SSH/releases"><img src="https://img.shields.io/github/downloads/GoblinThug/Custom-SSH/total?style=for-the-badge&label=Downloads&color=0969da" alt="Downloads" /></a>
+  <a href="https://github.com/GoblinThug/Custom-SSH"><img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-111827?style=for-the-badge&logo=electron&logoColor=white" alt="Platform" /></a>
+  <a href="https://github.com/GoblinThug/Custom-SSH"><img src="https://img.shields.io/badge/Stack-Electron%20%2B%20React-0f172a?style=for-the-badge&logo=react&logoColor=61dafb" alt="Stack" /></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/GoblinThug/CustomSSH/releases/latest"><strong>⬇️ Скачать последнюю версию</strong></a>
+  <a href="https://github.com/GoblinThug/Custom-SSH/releases/latest"><strong>⬇️ Скачать последнюю версию</strong></a>
   &nbsp;·&nbsp;
-  <a href="https://github.com/GoblinThug/CustomSSH/issues">🐞 Сообщить о проблеме</a>
+  <a href="https://github.com/GoblinThug/Custom-SSH/issues">🐞 Сообщить о проблеме</a>
 </p>
 
 ---
@@ -47,7 +47,7 @@
 | 🎨 | Тёмная / светлая тема, русский и английский |
 | ⬆️ | Обновления: авто на Windows (Setup) и Linux (AppImage); на macOS — ссылка на Releases |
 
-Текущая версия в репозитории: **`3.6.2`** (актуальный номер всегда в [Releases](https://github.com/GoblinThug/CustomSSH/releases)).
+Текущая версия в репозитории: **`3.6.2`** (актуальный номер всегда в [Releases](https://github.com/GoblinThug/Custom-SSH/releases)).
 
 ---
 
@@ -72,7 +72,7 @@
 
 ## ⬇️ Скачать и установить
 
-Готовые сборки: **[GitHub Releases →](https://github.com/GoblinThug/CustomSSH/releases)**
+Готовые сборки: **[GitHub Releases →](https://github.com/GoblinThug/Custom-SSH/releases)**
 
 ### 🪟 Windows
 
@@ -215,7 +215,7 @@ sudo dpkg -i CustomSSH-*-x64.deb
 1. Появится диалог: обновить или позже.
 2. После скачивания — перезапуск для установки.
 
-Portable обновляется только вручную с [Releases](https://github.com/GoblinThug/CustomSSH/releases).
+Portable обновляется только вручную с [Releases](https://github.com/GoblinThug/Custom-SSH/releases).
 
 ### macOS
 
@@ -225,7 +225,7 @@ Portable обновляется только вручную с [Releases](https:
 ### Linux
 
 **AppImage** проверяет обновления при запуске и из **Настроек** (нужен `latest-linux.yml` в релизе).  
-**.deb** — обновляйте вручную с [Releases](https://github.com/GoblinThug/CustomSSH/releases) или через менеджер пакетов после новой установки.
+**.deb** — обновляйте вручную с [Releases](https://github.com/GoblinThug/Custom-SSH/releases) или через менеджер пакетов после новой установки.
 
 Ошибки обновления показываются короткими понятными сообщениями (сеть, файл не найден, подпись и т.д.), а не сырым текстом updater’а.
 
@@ -253,7 +253,7 @@ Portable обновляется только вручную с [Releases](https:
 | Нет обновлений (Linux) | Используйте AppImage (не только `.deb`) и `latest-linux.yml` в релизе |
 | AppImage не запускается | `chmod +x …` и установите FUSE (`libfuse2`) |
 | Импорт без паролей | В исходном экспорте паролей не было / master password WinSCP |
-| Вопросы и баги | [Issues](https://github.com/GoblinThug/CustomSSH/issues) |
+| Вопросы и баги | [Issues](https://github.com/GoblinThug/Custom-SSH/issues) |
 
 ---
 
@@ -262,8 +262,8 @@ Portable обновляется только вручную с [Releases](https:
 Подробнее: [CONTRIBUTING.md](CONTRIBUTING.md) · [SECURITY.md](SECURITY.md) · [LICENSE](LICENSE) / [LICENSE.ru](LICENSE.ru)
 
 ```bash
-git clone https://github.com/GoblinThug/CustomSSH.git
-cd CustomSSH
+git clone https://github.com/GoblinThug/Custom-SSH.git
+cd Custom-SSH
 npm install
 npm run dev
 ```
@@ -313,7 +313,7 @@ Workflow [`.github/workflows/release.yml`](.github/workflows/release.yml) соб
 | 🎨 | Dark / light theme, English & Russian |
 | ⬆️ | Updates: auto on Windows Setup and Linux AppImage; on macOS — open Releases |
 
-Repo version: **`3.6.2`** (always check [Releases](https://github.com/GoblinThug/CustomSSH/releases) for the latest).
+Repo version: **`3.6.2`** (always check [Releases](https://github.com/GoblinThug/Custom-SSH/releases) for the latest).
 
 ---
 
@@ -338,7 +338,7 @@ Repo version: **`3.6.2`** (always check [Releases](https://github.com/GoblinThug
 
 ## ⬇️ Download & install
 
-Prebuilt packages: **[GitHub Releases →](https://github.com/GoblinThug/CustomSSH/releases)**
+Prebuilt packages: **[GitHub Releases →](https://github.com/GoblinThug/Custom-SSH/releases)**
 
 ### 🪟 Windows
 
@@ -486,7 +486,7 @@ When an update is found, CustomSSH opens **GitHub Releases** — download a new 
 ### Linux
 
 **AppImage** checks for updates on launch and from **Settings** (needs `latest-linux.yml` in the release).  
-**.deb** — update manually from [Releases](https://github.com/GoblinThug/CustomSSH/releases) or reinstall the new package.
+**.deb** — update manually from [Releases](https://github.com/GoblinThug/Custom-SSH/releases) or reinstall the new package.
 
 Update errors are shown as short localized messages instead of raw updater text.
 
@@ -514,7 +514,7 @@ Update errors are shown as short localized messages instead of raw updater text.
 | No updates (Linux) | Use AppImage (not only `.deb`) and ensure `latest-linux.yml` is in the release |
 | AppImage won’t start | `chmod +x …` and install FUSE (`libfuse2`) |
 | Import without passwords | Source export had none / WinSCP master password |
-| Bugs | [Issues](https://github.com/GoblinThug/CustomSSH/issues) |
+| Bugs | [Issues](https://github.com/GoblinThug/Custom-SSH/issues) |
 
 ---
 
@@ -523,8 +523,8 @@ Update errors are shown as short localized messages instead of raw updater text.
 See also: [CONTRIBUTING.md](CONTRIBUTING.md) · [SECURITY.md](SECURITY.md) · [LICENSE](LICENSE) / [LICENSE.ru](LICENSE.ru)
 
 ```bash
-git clone https://github.com/GoblinThug/CustomSSH.git
-cd CustomSSH
+git clone https://github.com/GoblinThug/Custom-SSH.git
+cd Custom-SSH
 npm install
 npm run dev
 ```
@@ -557,11 +557,11 @@ Pushing a `v*` tag or running the workflow manually also publishes.
 <p align="center">
   <img src="build/icon.png" alt="" width="40" height="40" /><br />
   <strong>CustomSSH</strong> · by Goblin_Thug<br />
-  <a href="https://github.com/GoblinThug/CustomSSH/releases">Downloads</a>
+  <a href="https://github.com/GoblinThug/Custom-SSH/releases">Downloads</a>
   ·
-  <a href="https://github.com/GoblinThug/CustomSSH">GitHub</a>
+  <a href="https://github.com/GoblinThug/Custom-SSH">GitHub</a>
   ·
-  <a href="https://github.com/GoblinThug/CustomSSH/issues">Issues</a>
+  <a href="https://github.com/GoblinThug/Custom-SSH/issues">Issues</a>
   ·
   <a href="CONTRIBUTING.md">Contributing</a>
   ·

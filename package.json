@@ -1,13 +1,13 @@
 {
   "name": "custom_ssh",
-  "version": "3.6.4",
+  "version": "3.6.5",
   "description": "Desktop SSH client for Windows, macOS and Linux — terminal, SFTP, editor, saved connections",
   "author": "Goblin_Thug",
   "main": "dist-electron/main.js",
   "private": true,
   "repository": {
     "type": "git",
-    "url": "https://github.com/GoblinThug/CustomSSH.git"
+    "url": "https://github.com/GoblinThug/Custom-SSH.git"
   },
   "scripts": {
     "dev": "vite",
@@ -66,7 +66,8 @@
   },
   "build": {
     "appId": "com.goblinthug.customssh",
-    "productName": "CustomSSH",
+    "productName": "Custom SSH",
+    "executableName": "CustomSSH",
     "copyright": "Copyright © Goblin_Thug",
     "directories": {
       "output": "release",
@@ -134,7 +135,7 @@
       "synopsis": "SSH client with saved connections, terminal, and SFTP",
       "desktop": {
         "entry": {
-          "Name": "CustomSSH",
+          "Name": "Custom SSH",
           "Comment": "SSH client with saved connections",
           "Categories": "Development;Network;",
           "StartupWMClass": "CustomSSH"
@@ -161,7 +162,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "CustomSSH",
+      "shortcutName": "Custom SSH",
       "installerIcon": "build/icon.ico",
       "uninstallerIcon": "build/icon.ico",
       "artifactName": "CustomSSH-Setup-${version}.${ext}"
@@ -173,7 +174,7 @@
       {
         "provider": "github",
         "owner": "GoblinThug",
-        "repo": "CustomSSH",
+        "repo": "Custom-SSH",
         "releaseType": "draft"
       }
     ]

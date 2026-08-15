@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { autoUpdater, type UpdateInfo, type ProgressInfo } from 'electron-updater'
 import { loadSettings } from './settings-store'
 
-const RELEASES_URL = 'https://github.com/GoblinThug/CustomSSH/releases/latest'
+const RELEASES_URL = 'https://github.com/GoblinThug/Custom-SSH/releases/latest'
 
 export type UpdateErrorCode =
   | 'macUnsigned'

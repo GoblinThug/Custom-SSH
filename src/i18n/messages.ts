@@ -249,7 +249,7 @@ export type MessageKey =
   | 'terminalRenameTab'
 
 const en: Record<MessageKey, string> = {
-  appName: 'CustomSSH',
+  appName: 'Custom SSH',
   connections: 'Connections',
   newFolder: 'New folder',
   newConnection: 'New connection',
@@ -505,7 +505,7 @@ const en: Record<MessageKey, string> = {
 }
 
 const ru: Record<MessageKey, string> = {
-  appName: 'CustomSSH',
+  appName: 'Custom SSH',
   connections: 'Подключения',
   newFolder: 'Новая папка',
   newConnection: 'Новое подключение',

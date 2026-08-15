@@ -10,7 +10,7 @@
 
 ## С чего начать
 
-1. Найдите или создайте [Issue](https://github.com/GoblinThug/CustomSSH/issues) с описанием бага или идеи.
+1. Найдите или создайте [Issue](https://github.com/GoblinThug/Custom-SSH/issues) с описанием бага или идеи.
 2. Сделайте fork и ветку от `main` (например `fix/editor-search` или `feat/import-xyz`).
 3. Внесите изменения, проверьте локально, откройте Pull Request.
 
@@ -21,8 +21,8 @@
 Нужны **Node.js 22+** и npm.
 
 ```bash
-git clone https://github.com/GoblinThug/CustomSSH.git
-cd CustomSSH
+git clone https://github.com/GoblinThug/Custom-SSH.git
+cd Custom-SSH
 npm install
 npm run dev
 ```
@@ -71,7 +71,7 @@ Thanks for your interest. Here’s how to get started and submit changes.
 
 ## Getting started
 
-1. Find or open an [Issue](https://github.com/GoblinThug/CustomSSH/issues) describing the bug or idea.
+1. Find or open an [Issue](https://github.com/GoblinThug/Custom-SSH/issues) describing the bug or idea.
 2. Fork and branch from `main` (e.g. `fix/editor-search` or `feat/import-xyz`).
 3. Make your changes, test locally, open a Pull Request.
 
@@ -82,8 +82,8 @@ Tiny fixes (typos, README, styling) can skip a separate issue.
 Requires **Node.js 22+** and npm.
 
 ```bash
-git clone https://github.com/GoblinThug/CustomSSH.git
-cd CustomSSH
+git clone https://github.com/GoblinThug/Custom-SSH.git
+cd Custom-SSH
 npm install
 npm run dev
 ```

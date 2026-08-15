@@ -4,7 +4,7 @@ import { useSettings } from '../i18n/SettingsContext'
 import type { AppLocale, AppTheme, Workspace } from '../types'
 import { SelectDropdown } from './SelectDropdown'
 
-const GITHUB_URL = 'https://github.com/GoblinThug/CustomSSH'
+const GITHUB_URL = 'https://github.com/GoblinThug/Custom-SSH'
 
 type UpdateStatus =
   | { state: 'idle' }
@@ -428,7 +428,7 @@ export function SettingsPanel({ open, onClose, onWorkspaceChange }: Props) {
             <section className="settings-section">
               <div className="settings-section__label">{t('settingsAbout')}</div>
               <p className="settings-version">
-                CustomSSH{' '}
+                {t('appName')}{' '}
                 <span className="settings-version__num">
                   {version ? `v${version}` : '…'}
                 </span>

@@ -93,7 +93,7 @@ export function EditorApp() {
       const file = await window.sshApi.fsRead(sessionId, remotePath)
       setContent(file.content)
       setOriginal(file.content)
-      document.title = `${fileName} — CustomSSH`
+      document.title = `${fileName} — Custom SSH`
     } catch (err) {
       setError(err instanceof Error ? err.message : t('editorLoadFailed'))
     } finally {
@@ -107,8 +107,8 @@ export function EditorApp() {
 
   useEffect(() => {
     document.title = dirty
-      ? `• ${fileName} — CustomSSH`
-      : `${fileName} — CustomSSH`
+      ? `• ${fileName} — Custom SSH`
+      : `${fileName} — Custom SSH`
   }, [dirty, fileName])
 
   const save = useCallback(async () => {

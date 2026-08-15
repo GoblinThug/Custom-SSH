@@ -12,7 +12,7 @@ CustomSSH — локальный SSH-клиент: пароли и ключи х
 
 **Не** создавайте публичный Issue с деталями эксплойта.
 
-Предпочтительный способ — [GitHub Security Advisory](https://github.com/GoblinThug/CustomSSH/security/advisories/new) (приватный отчёт).
+Предпочтительный способ — [GitHub Security Advisory](https://github.com/GoblinThug/Custom-SSH/security/advisories/new) (приватный отчёт).
 
 Если advisory недоступен, напишите автору через GitHub ([@GoblinThug](https://github.com/GoblinThug)) **без** публикации PoC в открытом issue.
 
@@ -54,7 +54,7 @@ CustomSSH is a local SSH client: passwords and keys stay on the user’s machine
 
 Do **not** open a public Issue with exploit details.
 
-Preferred channel: a private [GitHub Security Advisory](https://github.com/GoblinThug/CustomSSH/security/advisories/new).
+Preferred channel: a private [GitHub Security Advisory](https://github.com/GoblinThug/Custom-SSH/security/advisories/new).
 
 If that isn’t available, contact the maintainer via GitHub ([@GoblinThug](https://github.com/GoblinThug)) **without** posting a PoC in a public issue.
 

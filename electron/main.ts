@@ -75,6 +75,7 @@ async function openEditorWindow(sessionId: string, remotePath: string) {
     // in the corners; let CSS alone shape the window on win32.
     roundedCorners: process.platform !== 'win32',
     show: false,
+    title: 'Custom SSH',
     icon: resolveAppIcon(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -228,6 +229,7 @@ function createWindow() {
     // in the corners; let CSS alone shape the window on win32.
     roundedCorners: process.platform !== 'win32',
     show: false,
+    title: 'Custom SSH',
     icon: resolveAppIcon(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -930,12 +932,12 @@ function registerIpc() {
   })
 }
 
-app.setName('CustomSSH')
+app.setName('Custom SSH')
 
 app.whenReady().then(() => {
   if (process.platform === 'darwin') {
     app.setAboutPanelOptions({
-      applicationName: 'CustomSSH',
+      applicationName: 'Custom SSH',
       applicationVersion: app.getVersion(),
       copyright: 'Goblin_Thug',
     })
