@@ -38,7 +38,7 @@ html[data-theme='dark'] {
   --font-ui: 'IBM Plex Sans', 'Segoe UI', sans-serif;
   --font-mono: 'JetBrains Mono', 'Cascadia Mono', Consolas, monospace;
   --titlebar-height: 40px;
-  --sidebar-width: 280px;
+  --sidebar-width: 300px;
   --editor-width: 360px;
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-in: cubic-bezier(0.4, 0, 1, 1);
@@ -610,7 +610,7 @@ html.fx-fullscreen-exit .app {
   padding-left: 10px;
 }
 
-.folder-block .connection-item:hover {
+.folder-block .connection-row:hover .connection-item {
   background: color-mix(in srgb, var(--folder-color, var(--accent)) 14%, transparent);
 }
 
@@ -618,8 +618,21 @@ html.fx-fullscreen-exit .app {
   background: color-mix(in srgb, var(--folder-color, var(--accent)) 18%, transparent);
 }
 
-.folder-block .connection-item:hover.is-active {
+.folder-block .connection-row:hover .connection-item.is-active {
   background: color-mix(in srgb, var(--folder-color, var(--accent)) 24%, transparent);
+}
+
+.folder-block .connection-row:hover .connection-row__connect {
+  background: color-mix(in srgb, var(--folder-color, var(--accent)) 18%, transparent);
+  color: #fff;
+}
+
+.folder-block .connection-row .connection-row__connect:hover,
+.folder-block .connection-row .connection-row__connect:focus-visible,
+.folder-block .connection-row:hover .connection-row__connect:hover,
+.folder-block .connection-row:hover .connection-row__connect:focus-visible {
+  background: color-mix(in srgb, var(--folder-color, var(--accent)) 40%, transparent);
+  color: #fff;
 }
 
 .folder-empty {
@@ -630,6 +643,61 @@ html.fx-fullscreen-exit .app {
 
 .connection-row {
   position: relative;
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  min-height: 52px;
+}
+
+.connection-row__connect {
+  box-sizing: border-box;
+  flex: 0 0 40px;
+  align-self: stretch;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  min-height: 100%;
+  margin: 0;
+  padding: 0;
+  border-radius: 0 12px 12px 0;
+  color: #fff;
+  background: transparent;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+
+.connection-row:hover .connection-item {
+  background: var(--bg-hover);
+}
+
+.connection-row:hover .connection-item.is-active {
+  background: rgba(10, 132, 255, 0.15);
+}
+
+.connection-row:hover .connection-row__connect {
+  background: rgba(10, 132, 255, 0.14);
+  color: #fff;
+}
+
+.connection-row .connection-row__connect:hover,
+.connection-row .connection-row__connect:focus-visible,
+.connection-row:hover .connection-row__connect:hover,
+.connection-row:hover .connection-row__connect:focus-visible {
+  background: rgba(10, 132, 255, 0.36);
+  color: #fff;
+}
+
+.connection-row .connection-row__connect:active,
+.connection-row:hover .connection-row__connect:active {
+  background: rgba(10, 132, 255, 0.48);
+  transform: scale(0.96);
+}
+
+.connection-row__connect-icon {
+  display: block;
+  width: 12px;
+  height: 12px;
 }
 
 .folder-dot {
@@ -681,25 +749,23 @@ html.fx-fullscreen-exit .app {
 }
 
 .connection-item {
-  width: 100%;
+  box-sizing: border-box;
+  flex: 1 1 auto;
+  min-width: 0;
+  align-self: stretch;
   text-align: left;
-  border-radius: 12px;
+  border-radius: 12px 0 0 12px;
   padding: 10px 12px;
   display: grid;
+  align-content: center;
   gap: 4px;
-  transition: background 0.15s ease, transform 0.15s ease;
-}
-
-.connection-item:hover {
-  background: var(--bg-hover);
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
 }
 
 .connection-item.is-active {
   background: rgba(10, 132, 255, 0.11);
-}
-
-.connection-item:hover.is-active {
-  background: rgba(10, 132, 255, 0.15);
 }
 
 .connection-item__name {
@@ -3410,14 +3476,14 @@ html[data-theme='light'] .hotkeys-conflict {
 
 @media (max-width: 1100px) {
   :root {
-    --sidebar-width: 240px;
+    --sidebar-width: 260px;
     --editor-width: 320px;
   }
 }
 
 @media (max-width: 900px) {
   :root {
-    --sidebar-width: 200px;
+    --sidebar-width: 220px;
     --editor-width: 280px;
   }
 }

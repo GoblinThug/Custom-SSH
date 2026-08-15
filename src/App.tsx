@@ -671,31 +671,34 @@ export default function App() {
     return tab.label === payloadLabel(payload)
   }
 
-  const handleConnect = async () => {
-    const saved = connections.find((item) => item.id === draft.id)
-    const validationError = validate(draft, saved)
+  const handleConnect = async (sourceDraft: ConnectionDraft = draft) => {
+    const saved = connections.find((item) => item.id === sourceDraft.id)
+    const validationError = validate(sourceDraft, saved)
     if (validationError) {
+      setSelectedId(sourceDraft.id)
+      setDraft(sourceDraft)
+      setEditOpen(true)
       setError(t(validationError))
       return
     }
 
     const payload: ConnectPayload = {
-      host: draft.host.trim(),
-      port: draft.port,
-      username: draft.username.trim(),
-      authMethod: draft.authMethod,
-      password: draft.password || saved?.password,
-      privateKeyPath: draft.privateKeyPath.trim() || undefined,
-      passphrase: draft.passphrase || saved?.passphrase,
+      host: sourceDraft.host.trim(),
+      port: sourceDraft.port,
+      username: sourceDraft.username.trim(),
+      authMethod: sourceDraft.authMethod,
+      password: sourceDraft.password || saved?.password,
+      privateKeyPath: sourceDraft.privateKeyPath.trim() || undefined,
+      passphrase: sourceDraft.passphrase || saved?.passphrase,
       cols: 120,
       rows: 30,
       theme,
     }
     const label = payloadLabel(payload)
-    const title = draft.name.trim() || label
+    const title = sourceDraft.name.trim() || label
 
     const current = activeTab
-    if (current && isSameActiveTarget(current, payload, draft.id)) {
+    if (current && isSameActiveTarget(current, payload, sourceDraft.id)) {
       const proceed = await new Promise<boolean>((resolve) => {
         sameReconnectResolverRef.current = resolve
         setSameReconnectPrompt({ target: current.label || label })
@@ -703,6 +706,8 @@ export default function App() {
       if (!proceed) return
     }
 
+    setSelectedId(sourceDraft.id)
+    setDraft(sourceDraft)
     setBusy(true)
     setError(undefined)
     closeTreeIfUnpinned()
@@ -729,7 +734,7 @@ export default function App() {
       reconnectAttempt: 0,
       pingFail: 0,
       label,
-      connectionId: draft.id,
+      connectionId: sourceDraft.id,
     })
 
     const nextTab: TerminalTab = {
@@ -739,7 +744,7 @@ export default function App() {
       title,
       status: 'connecting',
       label,
-      connectionId: draft.id,
+      connectionId: sourceDraft.id,
       pending: false,
     }
 
@@ -782,15 +787,15 @@ export default function App() {
                 status: 'connected',
                 title,
                 label,
-                connectionId: draft.id,
+                connectionId: sourceDraft.id,
                 pending: false,
               }
             : tab,
         ),
       )
 
-      if (draft.id) {
-        const workspace = await window.sshApi.touchConnection(draft.id)
+      if (sourceDraft.id) {
+        const workspace = await window.sshApi.touchConnection(sourceDraft.id)
         applyWorkspace(workspace, setFolders, setConnections)
       }
     } catch (err) {
@@ -811,6 +816,10 @@ export default function App() {
       setError(message)
       setBusy(false)
     }
+  }
+
+  const handleSidebarConnect = (connection: SavedConnection) => {
+    void handleConnect(toDraft(connection))
   }
 
   const handleDisconnect = () => {
@@ -1051,6 +1060,7 @@ export default function App() {
           query={query}
           onQueryChange={setQuery}
           onSelect={handleSelect}
+          onConnect={handleSidebarConnect}
           onNew={handleNew}
           onCreateFolder={() => void handleCreateFolder()}
           onRenameFolder={(id, name) => void handleRenameFolder(id, name)}
