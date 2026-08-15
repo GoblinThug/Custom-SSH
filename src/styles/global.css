@@ -614,11 +614,13 @@ html.fx-fullscreen-exit .app {
   background: color-mix(in srgb, var(--folder-color, var(--accent)) 14%, transparent);
 }
 
-.folder-block .connection-item.is-active {
+.folder-block .connection-row.is-active .connection-item,
+.folder-block .connection-row.is-active .connection-row__connect {
   background: color-mix(in srgb, var(--folder-color, var(--accent)) 18%, transparent);
 }
 
-.folder-block .connection-row:hover .connection-item.is-active {
+.folder-block .connection-row.is-active:hover .connection-item,
+.folder-block .connection-row.is-active:hover .connection-row__connect {
   background: color-mix(in srgb, var(--folder-color, var(--accent)) 24%, transparent);
 }
 
@@ -630,7 +632,9 @@ html.fx-fullscreen-exit .app {
 .folder-block .connection-row .connection-row__connect:hover,
 .folder-block .connection-row .connection-row__connect:focus-visible,
 .folder-block .connection-row:hover .connection-row__connect:hover,
-.folder-block .connection-row:hover .connection-row__connect:focus-visible {
+.folder-block .connection-row:hover .connection-row__connect:focus-visible,
+.folder-block .connection-row.is-active .connection-row__connect:hover,
+.folder-block .connection-row.is-active .connection-row__connect:focus-visible {
   background: color-mix(in srgb, var(--folder-color, var(--accent)) 40%, transparent);
   color: #fff;
 }
@@ -671,7 +675,13 @@ html.fx-fullscreen-exit .app {
   background: var(--bg-hover);
 }
 
-.connection-row:hover .connection-item.is-active {
+.connection-row.is-active .connection-item,
+.connection-row.is-active .connection-row__connect {
+  background: rgba(10, 132, 255, 0.11);
+}
+
+.connection-row.is-active:hover .connection-item,
+.connection-row.is-active:hover .connection-row__connect {
   background: rgba(10, 132, 255, 0.15);
 }
 
@@ -683,7 +693,9 @@ html.fx-fullscreen-exit .app {
 .connection-row .connection-row__connect:hover,
 .connection-row .connection-row__connect:focus-visible,
 .connection-row:hover .connection-row__connect:hover,
-.connection-row:hover .connection-row__connect:focus-visible {
+.connection-row:hover .connection-row__connect:focus-visible,
+.connection-row.is-active .connection-row__connect:hover,
+.connection-row.is-active .connection-row__connect:focus-visible {
   background: rgba(10, 132, 255, 0.36);
   color: #fff;
 }
@@ -762,10 +774,6 @@ html.fx-fullscreen-exit .app {
   transition:
     background var(--dur-fast) var(--ease-out),
     transform var(--dur-fast) var(--ease-out);
-}
-
-.connection-item.is-active {
-  background: rgba(10, 132, 255, 0.11);
 }
 
 .connection-item__name {

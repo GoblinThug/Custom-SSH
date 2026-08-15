@@ -79,7 +79,10 @@ export function Sidebar({
   }
 
   const renderConnection = (item: SavedConnection) => (
-    <div key={item.id} className="connection-row">
+    <div
+      key={item.id}
+      className={`connection-row${selectedId === item.id ? ' is-active' : ''}`}
+    >
       <button
         type="button"
         className={`connection-item${selectedId === item.id ? ' is-active' : ''}`}
