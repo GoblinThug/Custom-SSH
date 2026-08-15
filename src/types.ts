@@ -145,12 +145,16 @@ export function defaultHotkeys(): HotkeysSettings {
 /** Fixed indent / tab stop width used by the editor and terminal. */
 export const TAB_SIZE = 4
 
+export type CloseAction = 'ask' | 'tray' | 'quit'
+
 export interface AppSettings {
   locale: AppLocale
   theme: AppTheme
   hotkeys: HotkeysSettings
   /** Version the user dismissed with "update later"; auto prompt stays quiet until a newer one. */
   skippedUpdateVersion: string | null
+  /** What the window close button does. */
+  closeAction: CloseAction
 }
 
 export const defaultSettings = (): AppSettings => ({
@@ -158,4 +162,5 @@ export const defaultSettings = (): AppSettings => ({
   theme: 'dark',
   hotkeys: defaultHotkeys(),
   skippedUpdateVersion: null,
+  closeAction: 'ask',
 })

@@ -13,6 +13,7 @@ import {
   type AppLocale,
   type AppSettings,
   type AppTheme,
+  type CloseAction,
   type HotkeyId,
   type KeyBinding,
 } from '../types'
@@ -22,9 +23,11 @@ type SettingsContextValue = {
   settings: AppSettings
   locale: AppLocale
   theme: AppTheme
+  closeAction: CloseAction
   t: (key: MessageKey) => string
   setLocale: (locale: AppLocale) => void
   setTheme: (theme: AppTheme) => void
+  setCloseAction: (closeAction: CloseAction) => void
   setHotkey: (id: HotkeyId, binding: KeyBinding) => void
   resetHotkey: (id: HotkeyId) => void
   ready: boolean
@@ -73,6 +76,13 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     [persist],
   )
 
+  const setCloseAction = useCallback(
+    (closeAction: CloseAction) => {
+      void persist({ closeAction })
+    },
+    [persist],
+  )
+
   const setHotkey = useCallback(
     (id: HotkeyId, binding: KeyBinding) => {
       void persist({
@@ -107,14 +117,25 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       settings,
       locale: settings.locale,
       theme: settings.theme,
+      closeAction: settings.closeAction,
       t,
       setLocale,
       setTheme,
+      setCloseAction,
       setHotkey,
       resetHotkey,
       ready,
     }),
-    [settings, t, setLocale, setTheme, setHotkey, resetHotkey, ready],
+    [
+      settings,
+      t,
+      setLocale,
+      setTheme,
+      setCloseAction,
+      setHotkey,
+      resetHotkey,
+      ready,
+    ],
   )
 
   return (

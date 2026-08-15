@@ -180,6 +180,10 @@ export type MessageKey =
   | 'settingsTheme'
   | 'themeDark'
   | 'themeLight'
+  | 'settingsCloseAction'
+  | 'closeActionAsk'
+  | 'closeActionTray'
+  | 'closeActionQuit'
   | 'settingsDone'
   | 'settingsAbout'
   | 'settingsGithub'
@@ -239,6 +243,17 @@ export type MessageKey =
   | 'windowMinimize'
   | 'windowFullscreen'
   | 'windowExitFullscreen'
+  | 'quitPromptTitle'
+  | 'quitPromptMessage'
+  | 'quitPromptTray'
+  | 'quitPromptQuit'
+  | 'trayStatusOnline'
+  | 'trayStatusOffline'
+  | 'trayActiveSessions'
+  | 'trayNavigation'
+  | 'trayOpenApp'
+  | 'trayQuickConnect'
+  | 'trayNoConnections'
   | 'errName'
   | 'errHost'
   | 'errUsername'
@@ -467,6 +482,10 @@ const en: Record<MessageKey, string> = {
   settingsTheme: 'Theme',
   themeDark: 'Dark',
   themeLight: 'Light',
+  settingsCloseAction: 'Close button',
+  closeActionAsk: 'Always ask',
+  closeActionTray: 'Minimize to tray',
+  closeActionQuit: 'Quit',
   settingsDone: 'Done',
   settingsAbout: 'About',
   settingsGithub: 'GitHub repository',
@@ -531,6 +550,18 @@ const en: Record<MessageKey, string> = {
   windowMinimize: 'Minimize',
   windowFullscreen: 'Fullscreen',
   windowExitFullscreen: 'Exit fullscreen',
+  quitPromptTitle: 'Close Custom SSH?',
+  quitPromptMessage:
+    'Quit the app completely, or keep it running in the system tray?',
+  quitPromptTray: 'Minimize to tray',
+  quitPromptQuit: 'Quit application',
+  trayStatusOnline: 'Connected',
+  trayStatusOffline: 'No active connection',
+  trayActiveSessions: 'Active',
+  trayNavigation: 'Navigation',
+  trayOpenApp: 'Open Custom SSH',
+  trayQuickConnect: 'Quick connect',
+  trayNoConnections: 'No saved servers yet',
   errName: 'Name is required',
   errHost: 'Host is required',
   errUsername: 'Username is required',
@@ -763,6 +794,10 @@ const ru: Record<MessageKey, string> = {
   settingsTheme: 'Тема',
   themeDark: 'Тёмная',
   themeLight: 'Светлая',
+  settingsCloseAction: 'Кнопка закрытия',
+  closeActionAsk: 'Всегда спрашивать',
+  closeActionTray: 'Сворачивать',
+  closeActionQuit: 'Закрывать',
   settingsDone: 'Готово',
   settingsAbout: 'О приложении',
   settingsGithub: 'Репозиторий на GitHub',
@@ -827,6 +862,18 @@ const ru: Record<MessageKey, string> = {
   windowMinimize: 'Свернуть',
   windowFullscreen: 'На весь экран',
   windowExitFullscreen: 'Выйти из полноэкранного режима',
+  quitPromptTitle: 'Закрыть Custom SSH?',
+  quitPromptMessage:
+    'Полностью закрыть приложение или свернуть его в системный трей?',
+  quitPromptTray: 'Свернуть в трей',
+  quitPromptQuit: 'Закрыть приложение',
+  trayStatusOnline: 'Подключено',
+  trayStatusOffline: 'Нет активного подключения',
+  trayActiveSessions: 'Активные',
+  trayNavigation: 'Навигация',
+  trayOpenApp: 'Открыть Custom SSH',
+  trayQuickConnect: 'Быстрое подключение',
+  trayNoConnections: 'Пока нет сохранённых серверов',
   errName: 'Укажите имя',
   errHost: 'Укажите хост',
   errUsername: 'Укажите пользователя',

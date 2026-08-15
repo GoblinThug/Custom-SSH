@@ -283,6 +283,114 @@ const api = {
     ipcRenderer.invoke('window:fullscreenToggle') as Promise<boolean>,
   windowClose: () => ipcRenderer.invoke('window:close'),
   windowForceClose: () => ipcRenderer.invoke('window:forceClose'),
+  windowHideToTray: () => ipcRenderer.invoke('window:hideToTray'),
+  windowQuitApp: () => ipcRenderer.invoke('window:quitApp'),
+  trayReportState: (state: {
+    sessions: Array<{
+      sessionId: string
+      label: string
+      title: string
+      status: 'connecting' | 'connected' | 'reconnecting'
+      connectionId?: string
+    }>
+    connections: Array<{
+      id: string
+      name: string
+      host: string
+      port: number
+      username: string
+      folderColor?: string | null
+    }>
+  }) => ipcRenderer.invoke('tray:reportState', state),
+  trayGetState: () =>
+    ipcRenderer.invoke('tray:getState') as Promise<{
+      sessions: Array<{
+        sessionId: string
+        label: string
+        title: string
+        status: 'connecting' | 'connected' | 'reconnecting'
+        connectionId?: string
+      }>
+      connections: Array<{
+        id: string
+        name: string
+        host: string
+        port: number
+        username: string
+        folderColor?: string | null
+      }>
+    }>,
+  traySetPopupHeight: (height: number) =>
+    ipcRenderer.invoke('tray:setPopupHeight', height),
+  trayOpenApp: () => ipcRenderer.invoke('tray:openApp'),
+  trayHidePopup: () => ipcRenderer.invoke('tray:hidePopup'),
+  trayQuickConnect: (connectionId: string) =>
+    ipcRenderer.invoke('tray:quickConnect', connectionId),
+  trayDisconnect: (sessionId: string) =>
+    ipcRenderer.invoke('tray:disconnect', sessionId),
+  trayQuit: () => ipcRenderer.invoke('tray:quit'),
+  onTrayState: (
+    callback: (state: {
+      sessions: Array<{
+        sessionId: string
+        label: string
+        title: string
+        status: 'connecting' | 'connected' | 'reconnecting'
+        connectionId?: string
+      }>
+      connections: Array<{
+        id: string
+        name: string
+        host: string
+        port: number
+        username: string
+        folderColor?: string | null
+      }>
+    }) => void,
+  ) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      state: {
+        sessions: Array<{
+          sessionId: string
+          label: string
+          title: string
+          status: 'connecting' | 'connected' | 'reconnecting'
+          connectionId?: string
+        }>
+        connections: Array<{
+          id: string
+          name: string
+          host: string
+          port: number
+          username: string
+          folderColor?: string | null
+        }>
+      },
+    ) => callback(state)
+    ipcRenderer.on('tray:state', listener)
+    return () => {
+      ipcRenderer.removeListener('tray:state', listener)
+    }
+  },
+  onTrayQuickConnect: (callback: (connectionId: string) => void) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      connectionId: string,
+    ) => callback(connectionId)
+    ipcRenderer.on('tray:quick-connect', listener)
+    return () => {
+      ipcRenderer.removeListener('tray:quick-connect', listener)
+    }
+  },
+  onTrayDisconnect: (callback: (sessionId: string) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, sessionId: string) =>
+      callback(sessionId)
+    ipcRenderer.on('tray:disconnect', listener)
+    return () => {
+      ipcRenderer.removeListener('tray:disconnect', listener)
+    }
+  },
   windowIsFullscreen: () =>
     ipcRenderer.invoke('window:isFullscreen') as Promise<boolean>,
   confirmDialog: (payload: {
@@ -297,6 +405,13 @@ const api = {
     ipcRenderer.on('editor:close-request', listener)
     return () => {
       ipcRenderer.removeListener('editor:close-request', listener)
+    }
+  },
+  onWindowCloseRequest: (callback: () => void) => {
+    const listener = () => callback()
+    ipcRenderer.on('window:close-request', listener)
+    return () => {
+      ipcRenderer.removeListener('window:close-request', listener)
     }
   },
   onWindowState: (

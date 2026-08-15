@@ -150,7 +150,9 @@ function reorderTabs(
 }
 
 export default function App() {
-  const { t, theme } = useSettings()
+  const { t, theme, closeAction } = useSettings()
+  const closeActionRef = useRef(closeAction)
+  closeActionRef.current = closeAction
   const [folders, setFolders] = useState<ConnectionFolder[]>([])
   const [connections, setConnections] = useState<SavedConnection[]>([])
   const [query, setQuery] = useState('')
@@ -175,6 +177,7 @@ export default function App() {
     target: string
   } | null>(null)
   const sameReconnectResolverRef = useRef<((ok: boolean) => void) | null>(null)
+  const [quitPromptOpen, setQuitPromptOpen] = useState(false)
   const renameInputRef = useRef<HTMLInputElement | null>(null)
 
   const tabsRef = useRef<TerminalTab[]>([])
@@ -821,6 +824,8 @@ export default function App() {
   const handleSidebarConnect = (connection: SavedConnection) => {
     void handleConnect(toDraft(connection))
   }
+  const handleSidebarConnectRef = useRef(handleSidebarConnect)
+  handleSidebarConnectRef.current = handleSidebarConnect
 
   const handleDisconnect = () => {
     const tab = activeTab
@@ -1020,6 +1025,102 @@ export default function App() {
       syncChrome(state)
     })
   }, [])
+
+  useEffect(() => {
+    return window.sshApi.onWindowCloseRequest(() => {
+      const action = closeActionRef.current
+      if (action === 'tray') {
+        void window.sshApi.windowHideToTray()
+        return
+      }
+      if (action === 'quit') {
+        void window.sshApi.windowQuitApp()
+        return
+      }
+      setQuitPromptOpen(true)
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!quitPromptOpen) return
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') {
+        ev.preventDefault()
+        setQuitPromptOpen(false)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [quitPromptOpen])
+
+  const hideToTray = () => {
+    setQuitPromptOpen(false)
+    void window.sshApi.windowHideToTray()
+  }
+
+  const quitApp = () => {
+    setQuitPromptOpen(false)
+    void window.sshApi.windowQuitApp()
+  }
+
+  useEffect(() => {
+    const sessions = tabs
+      .filter(
+        (tab) =>
+          tab.status === 'connected' ||
+          tab.status === 'connecting' ||
+          tab.status === 'reconnecting',
+      )
+      .map((tab) => ({
+        sessionId: tab.sessionId,
+        label: tab.label,
+        title: tab.title,
+        status: tab.status as 'connecting' | 'connected' | 'reconnecting',
+        connectionId: tab.connectionId,
+      }))
+      // Unique by session (multiple shells share one session).
+      .filter(
+        (tab, index, list) =>
+          list.findIndex((item) => item.sessionId === tab.sessionId) === index,
+      )
+
+    void window.sshApi.trayReportState({
+      sessions,
+      connections: connections.map((item) => {
+        const folder = folders.find((entry) => entry.id === item.folderId)
+        return {
+          id: item.id,
+          name: item.name,
+          host: item.host,
+          port: item.port,
+          username: item.username,
+          folderColor: folder?.color ?? null,
+        }
+      }),
+    })
+  }, [tabs, connections, folders])
+
+  useEffect(() => {
+    return window.sshApi.onTrayQuickConnect((connectionId) => {
+      const connection = connectionsRef.current.find(
+        (item) => item.id === connectionId,
+      )
+      if (!connection) return
+      handleSidebarConnectRef.current(connection)
+    })
+  }, [])
+
+  useEffect(() => {
+    return window.sshApi.onTrayDisconnect((sessionId) => {
+      stopSessionReconnect(sessionId)
+      window.sshApi.disconnect(sessionId, 'user')
+      sessionsRef.current.delete(sessionId)
+      removeTabsForSession(sessionId)
+      closeTreeIfUnpinned()
+      setPingMs(null)
+      setBusy(false)
+    })
+  }, [closeTreeIfUnpinned, removeTabsForSession, stopSessionReconnect])
 
   const status = activeTab?.status ?? (tabs.length > 0 ? 'connected' : 'idle')
   const reconnectAttempt = activeTab?.reconnectAttempt ?? 0
@@ -1457,6 +1558,72 @@ export default function App() {
                   sameReconnectResolverRef.current = null
                   setSameReconnectPrompt(null)
                 }}
+              >
+                {t('cancel')}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {quitPromptOpen ? (
+        <div
+          className="update-modal-backdrop"
+          role="presentation"
+          onClick={() => setQuitPromptOpen(false)}
+        >
+          <div
+            className="update-modal"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="quit-prompt-title"
+            aria-describedby="quit-prompt-desc"
+            onClick={(ev) => ev.stopPropagation()}
+          >
+            <div className="update-modal__icon" aria-hidden>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                <path
+                  d="M9 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h3"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                />
+                <path
+                  d="M15 8l4 4-4 4M10 12h9"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </div>
+            <div className="update-modal__body">
+              <h2 id="quit-prompt-title" className="update-modal__title">
+                {t('quitPromptTitle')}
+              </h2>
+              <p id="quit-prompt-desc" className="update-modal__message">
+                {t('quitPromptMessage')}
+              </p>
+            </div>
+            <div className="update-modal__actions update-modal__actions--compact">
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={hideToTray}
+              >
+                {t('quitPromptTray')}
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                onClick={quitApp}
+              >
+                {t('quitPromptQuit')}
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setQuitPromptOpen(false)}
               >
                 {t('cancel')}
               </button>

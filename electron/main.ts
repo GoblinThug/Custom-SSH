@@ -7,6 +7,7 @@ import {
   nativeImage,
   screen,
   Menu,
+  Tray,
 } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -45,9 +46,239 @@ const ssh = new SshManager(() => mainWindow)
 let appFullscreen = false
 let boundsBeforeFullscreen: Electron.Rectangle | null = null
 let animatingWindow = false
+let tray: Tray | null = null
+let trayPopup: BrowserWindow | null = null
+/** True while the tray mini-menu is considered open (more reliable than isVisible on Win). */
+let trayPopupShown = false
+/** Ignore tray clicks that arrive right after an outside blur-hide. */
+let ignoreTrayClickUntil = 0
+let trayBlurHideTimer: ReturnType<typeof setTimeout> | null = null
+/** True while the app is exiting for real (tray Quit / Quit from modal). */
+let isQuitting = false
+
+type TraySessionInfo = {
+  sessionId: string
+  label: string
+  title: string
+  status: 'connecting' | 'connected' | 'reconnecting'
+  connectionId?: string
+}
+
+type TrayConnectionInfo = {
+  id: string
+  name: string
+  host: string
+  port: number
+  username: string
+  folderColor?: string | null
+}
+
+type TrayPopupState = {
+  sessions: TraySessionInfo[]
+  connections: TrayConnectionInfo[]
+}
+
+let trayPopupState: TrayPopupState = { sessions: [], connections: [] }
 
 function windowFromEvent(event: Electron.IpcMainInvokeEvent): BrowserWindow | null {
   return BrowserWindow.fromWebContents(event.sender)
+}
+
+function clearTrayBlurHideTimer() {
+  if (!trayBlurHideTimer) return
+  clearTimeout(trayBlurHideTimer)
+  trayBlurHideTimer = null
+}
+
+function hideTrayPopup() {
+  clearTrayBlurHideTimer()
+  trayPopupShown = false
+  if (!trayPopup || trayPopup.isDestroyed()) return
+  trayPopup.hide()
+}
+
+function destroyTrayPopup() {
+  clearTrayBlurHideTimer()
+  trayPopupShown = false
+  if (!trayPopup || trayPopup.isDestroyed()) {
+    trayPopup = null
+    return
+  }
+  trayPopup.destroy()
+  trayPopup = null
+}
+
+function destroyTray() {
+  destroyTrayPopup()
+  if (!tray) return
+  tray.destroy()
+  tray = null
+}
+
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow()
+    return
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+}
+
+function broadcastTrayState() {
+  if (trayPopup && !trayPopup.isDestroyed()) {
+    trayPopup.webContents.send('tray:state', trayPopupState)
+  }
+}
+
+function setTrayPopupState(next: TrayPopupState) {
+  trayPopupState = next
+  const online = next.sessions.some((session) => session.status === 'connected')
+  tray?.setToolTip(online ? 'Custom SSH — connected' : 'Custom SSH')
+  broadcastTrayState()
+}
+
+async function loadTrayPopupPage(win: BrowserWindow) {
+  if (process.env.VITE_DEV_SERVER_URL) {
+    const url = new URL('/tray.html', process.env.VITE_DEV_SERVER_URL)
+    await win.loadURL(url.toString())
+  } else {
+    await win.loadFile(path.join(__dirname, '../dist/tray.html'))
+  }
+}
+
+function positionTrayPopup(win: BrowserWindow, height: number) {
+  if (!tray) return
+  const trayBounds = tray.getBounds()
+  // 300px card + horizontal padding for rounded shadow bleed.
+  const width = 328
+  const display = screen.getDisplayNearestPoint({
+    x: trayBounds.x,
+    y: trayBounds.y,
+  })
+  const work = display.workArea
+  let x = Math.round(trayBounds.x + trayBounds.width / 2 - width / 2)
+  let y = Math.round(trayBounds.y - height - 8)
+  if (y < work.y) {
+    y = Math.round(trayBounds.y + trayBounds.height + 8)
+  }
+  x = Math.min(Math.max(x, work.x + 8), work.x + work.width - width - 8)
+  y = Math.min(Math.max(y, work.y + 8), work.y + work.height - height - 8)
+  win.setBounds({ x, y, width, height })
+}
+
+async function ensureTrayPopup() {
+  if (trayPopup && !trayPopup.isDestroyed()) return trayPopup
+
+  const win = new BrowserWindow({
+    width: 300,
+    height: 360,
+    show: false,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    maximizable: false,
+    minimizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    // Native OS shadow is rectangular on Windows and fights CSS radius.
+    hasShadow: false,
+    backgroundColor: '#00000000',
+    roundedCorners: false,
+    focusable: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
+  })
+
+  trayPopup = win
+  win.setMenu(null)
+  win.on('blur', () => {
+    if (!trayPopupShown || !trayPopup || trayPopup.isDestroyed()) return
+    // Delay hide so a tray-icon click can cancel it and keep the menu open.
+    clearTrayBlurHideTimer()
+    trayBlurHideTimer = setTimeout(() => {
+      trayBlurHideTimer = null
+      hideTrayPopup()
+      ignoreTrayClickUntil = Date.now() + 400
+    }, 180)
+  })
+  win.on('closed', () => {
+    if (trayPopup === win) {
+      trayPopup = null
+      trayPopupShown = false
+    }
+  })
+
+  await loadTrayPopupPage(win)
+  return win
+}
+
+function refreshTrayConnectionsFromStore() {
+  const workspace = loadWorkspace()
+  const folderColorById = new Map(
+    workspace.folders.map((folder) => [folder.id, folder.color] as const),
+  )
+  trayPopupState = {
+    ...trayPopupState,
+    connections: workspace.connections.map((item) => ({
+      id: item.id,
+      name: item.name,
+      host: item.host,
+      port: item.port,
+      username: item.username,
+      folderColor: item.folderId
+        ? folderColorById.get(item.folderId) ?? null
+        : null,
+    })),
+  }
+}
+
+/** Tray click only opens. If already open, another tray click does nothing. */
+async function openTrayPopupFromTray() {
+  clearTrayBlurHideTimer()
+  if (Date.now() < ignoreTrayClickUntil) return
+  if (trayPopupShown) return
+
+  refreshTrayConnectionsFromStore()
+  const win = await ensureTrayPopup()
+  broadcastTrayState()
+  positionTrayPopup(win, win.getBounds().height)
+  trayPopupShown = true
+  win.show()
+  win.focus()
+}
+
+function ensureTray() {
+  if (tray) return
+  const icon = resolveAppIcon()
+  tray = new Tray(icon ?? nativeImage.createEmpty())
+  tray.setToolTip('Custom SSH')
+  tray.on('click', () => {
+    void openTrayPopupFromTray()
+  })
+  tray.on('right-click', () => {
+    void openTrayPopupFromTray()
+  })
+  tray.on('double-click', () => {
+    showMainWindow()
+    destroyTrayPopup()
+  })
+}
+
+function hideMainToTray() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  ensureTray()
+  if (appFullscreen) {
+    appFullscreen = false
+    boundsBeforeFullscreen = null
+  }
+  destroyTrayPopup()
+  mainWindow.hide()
 }
 
 function editorKey(sessionId: string, remotePath: string) {
@@ -92,7 +323,7 @@ async function openEditorWindow(sessionId: string, remotePath: string) {
   })
   win.on('close', (event) => {
     const editorWin = win as BrowserWindow & { __forceClose?: boolean }
-    if (editorWin.__forceClose || win.isDestroyed()) return
+    if (isQuitting || editorWin.__forceClose || win.isDestroyed()) return
     event.preventDefault()
     win.webContents.send('editor:close-request')
   })
@@ -304,6 +535,12 @@ function createWindow() {
     mainWindow = null
     appFullscreen = false
     boundsBeforeFullscreen = null
+  })
+
+  mainWindow.on('close', (event) => {
+    if (isQuitting || mainWindow?.isDestroyed()) return
+    event.preventDefault()
+    mainWindow?.webContents.send('window:close-request')
   })
 }
 
@@ -894,6 +1131,69 @@ function registerIpc() {
     win.close()
   })
 
+  ipcMain.handle('window:hideToTray', () => {
+    hideMainToTray()
+  })
+
+  ipcMain.handle('window:quitApp', () => {
+    isQuitting = true
+    destroyTray()
+    for (const win of BrowserWindow.getAllWindows()) {
+      const flagged = win as BrowserWindow & { __forceClose?: boolean }
+      flagged.__forceClose = true
+    }
+    app.quit()
+  })
+
+  ipcMain.handle('tray:reportState', (_event, state: TrayPopupState) => {
+    setTrayPopupState({
+      sessions: Array.isArray(state?.sessions) ? state.sessions : [],
+      connections: Array.isArray(state?.connections) ? state.connections : [],
+    })
+  })
+
+  ipcMain.handle('tray:getState', () => trayPopupState)
+
+  ipcMain.handle('tray:setPopupHeight', (event, height: number) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win || win.isDestroyed()) return
+    const nextHeight = Math.max(248, Math.min(560, Math.round(height)))
+    positionTrayPopup(win, nextHeight)
+  })
+
+  ipcMain.handle('tray:openApp', () => {
+    destroyTrayPopup()
+    showMainWindow()
+  })
+
+  ipcMain.handle('tray:hidePopup', () => {
+    hideTrayPopup()
+  })
+
+  ipcMain.handle('tray:quickConnect', (_event, connectionId: string) => {
+    destroyTrayPopup()
+    showMainWindow()
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('tray:quick-connect', connectionId)
+    }
+  })
+
+  ipcMain.handle('tray:disconnect', (_event, sessionId: string) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('tray:disconnect', sessionId)
+    }
+  })
+
+  ipcMain.handle('tray:quit', () => {
+    isQuitting = true
+    destroyTray()
+    for (const win of BrowserWindow.getAllWindows()) {
+      const flagged = win as BrowserWindow & { __forceClose?: boolean }
+      flagged.__forceClose = true
+    }
+    app.quit()
+  })
+
   ipcMain.handle(
     'dialog:confirm',
     async (
@@ -947,13 +1247,21 @@ app.whenReady().then(() => {
 
   registerIpc()
   createWindow()
+  ensureTray()
   initAutoUpdater()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    else showMainWindow()
   })
 })
 
+app.on('before-quit', () => {
+  isQuitting = true
+  destroyTray()
+})
+
 app.on('window-all-closed', () => {
+  if (tray) return
   if (process.platform !== 'darwin') app.quit()
 })

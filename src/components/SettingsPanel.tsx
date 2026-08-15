@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { APP_LOCALES } from '../i18n/locales'
 import { useSettings } from '../i18n/SettingsContext'
-import type { AppLocale, AppTheme, Workspace } from '../types'
+import type { AppLocale, AppTheme, CloseAction, Workspace } from '../types'
 import { formatAppError } from '../utils/formatAppError'
 import { SelectDropdown } from './SelectDropdown'
 
@@ -54,7 +54,8 @@ function formatMessage(
 }
 
 export function SettingsPanel({ open, onClose, onWorkspaceChange }: Props) {
-  const { t, locale, theme, setLocale, setTheme } = useSettings()
+  const { t, locale, theme, closeAction, setLocale, setTheme, setCloseAction } =
+    useSettings()
   const [version, setVersion] = useState('')
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({
     state: 'idle',
@@ -300,6 +301,26 @@ export function SettingsPanel({ open, onClose, onWorkspaceChange }: Props) {
                 </button>
               ))}
             </div>
+          </section>
+
+          <section className="settings-section">
+            <label
+              className="settings-section__label"
+              htmlFor="settings-close-action"
+            >
+              {t('settingsCloseAction')}
+            </label>
+            <SelectDropdown
+              id="settings-close-action"
+              className="select-dropdown--settings"
+              value={closeAction}
+              onChange={(next) => setCloseAction(next as CloseAction)}
+              options={[
+                { value: 'ask', label: t('closeActionAsk') },
+                { value: 'tray', label: t('closeActionTray') },
+                { value: 'quit', label: t('closeActionQuit') },
+              ]}
+            />
           </section>
 
           <div className="settings-panel__bottom">

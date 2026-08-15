@@ -8,6 +8,7 @@ import {
   type AppLocale,
   type AppSettings,
   type AppTheme,
+  type CloseAction,
   type HotkeyId,
   type HotkeysSettings,
   type KeyBinding,
@@ -20,6 +21,7 @@ const DEFAULTS: AppSettings = {
   theme: 'dark',
   hotkeys: defaultHotkeys(),
   skippedUpdateVersion: null,
+  closeAction: 'ask',
 }
 
 function settingsPath() {
@@ -35,6 +37,10 @@ function isLocale(value: unknown): value is AppLocale {
 
 function isTheme(value: unknown): value is AppTheme {
   return value === 'dark' || value === 'light'
+}
+
+function isCloseAction(value: unknown): value is CloseAction {
+  return value === 'ask' || value === 'tray' || value === 'quit'
 }
 
 function normalizeBinding(
@@ -75,6 +81,9 @@ function normalize(raw: Partial<AppSettings> | null | undefined): AppSettings {
     theme: isTheme(raw?.theme) ? raw.theme : DEFAULTS.theme,
     hotkeys: normalizeHotkeys(raw?.hotkeys),
     skippedUpdateVersion: normalizeVersion(raw?.skippedUpdateVersion),
+    closeAction: isCloseAction(raw?.closeAction)
+      ? raw.closeAction
+      : DEFAULTS.closeAction,
   }
 }
 

@@ -15,6 +15,7 @@ export default defineConfig({
       input: {
         main: path.resolve(__dirname, 'index.html'),
         editor: path.resolve(__dirname, 'editor.html'),
+        tray: path.resolve(__dirname, 'tray.html'),
       },
     },
   },
