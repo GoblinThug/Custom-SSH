@@ -12,6 +12,7 @@ import { TransferDock } from './components/TransferDock'
 import { ProgressBar } from './components/ProgressBar'
 import { useSettings } from './i18n/SettingsContext'
 import type { MessageKey } from './i18n/messages'
+import { formatAppError } from './utils/formatAppError'
 import {
   emptyDraft,
   type ConnectPayload,
@@ -410,7 +411,13 @@ export default function App() {
         removeTabsForSession(incomingSessionId)
         setBusy(false)
         if (payload.status === 'error') {
-          setError(payload.message ?? tRef.current('errConnectionFailed'))
+          setError(
+            formatAppError(
+              payload.message,
+              tRef.current,
+              'errConnectionFailed',
+            ),
+          )
         }
         if (activeTabKeyRef.current == null) {
           closeTreeIfUnpinned()
@@ -800,8 +807,7 @@ export default function App() {
             null,
         )
       }
-      const message =
-        err instanceof Error ? err.message : t('errConnectFailed')
+      const message = formatAppError(err, t, 'errConnectFailed')
       setError(message)
       setBusy(false)
     }
@@ -864,7 +870,7 @@ export default function App() {
     } catch (err) {
       setTabs((prev) => prev.filter((item) => item.key !== tabKey))
       setActiveTabKey(tab.key)
-      setError(err instanceof Error ? err.message : t('errConnectionFailed'))
+      setError(formatAppError(err, t, 'errConnectionFailed'))
     } finally {
       openingShellRef.current = false
       setOpeningShell(false)

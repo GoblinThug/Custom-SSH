@@ -9,6 +9,7 @@ import {
 } from 'react'
 import { useSettings } from '../i18n/SettingsContext'
 import type { RemoteFsEntry } from '../types'
+import { formatAppError } from '../utils/formatAppError'
 import { ChevronIcon } from './ChevronIcon'
 
 function emitTransferQueue(queued: number) {
@@ -509,7 +510,7 @@ export function FileTreePanel({
         const entries = await window.sshApi.fsList(sessionId, remotePath)
         setChildrenMap((prev) => ({ ...prev, [remotePath]: entries }))
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to list directory')
+        setError(formatAppError(err, t, 'errFileOpFailed'))
       } finally {
         setLoadingPaths((prev) => {
           const next = new Set(prev)
@@ -518,7 +519,7 @@ export function FileTreePanel({
         })
       }
     },
-    [sessionId],
+    [sessionId, t],
   )
 
   const refresh = useCallback(async () => {
@@ -535,11 +536,11 @@ export function FileTreePanel({
       lastSelectedRef.current = null
       await Promise.all(chain.map((path) => loadDir(path)))
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load tree')
+      setError(formatAppError(err, t, 'errFileOpFailed'))
     } finally {
       setBusy(false)
     }
-  }, [sessionId, loadDir])
+  }, [sessionId, loadDir, t])
 
   useEffect(() => {
     if (open && sessionId) {
@@ -663,7 +664,7 @@ export function FileTreePanel({
     try {
       await window.sshApi.openEditorWindow(sessionId, remotePath)
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('editorLoadFailed'))
+      setError(formatAppError(err, t, 'editorLoadFailed'))
     }
   }
 
@@ -725,7 +726,7 @@ export function FileTreePanel({
         noteTransferResult('download', result.count, result.cancelled)
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('fileDownloadFailed'))
+      setError(formatAppError(err, t, 'fileDownloadFailed'))
     }
   }
 
@@ -751,7 +752,7 @@ export function FileTreePanel({
         }
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('fileUploadFailed'))
+      setError(formatAppError(err, t, 'fileUploadFailed'))
     }
   }
 
@@ -817,7 +818,7 @@ export function FileTreePanel({
       const parents = new Set(remotePaths.map((item) => parentDir(item)))
       await Promise.all(Array.from(parents).map((dir) => refreshDir(dir)))
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('fileOpFailed'))
+      setError(formatAppError(err, t, 'fileOpFailed'))
     } finally {
       setBusy(false)
     }
@@ -879,7 +880,7 @@ export function FileTreePanel({
       for (const item of moves) parents.add(parentDir(item.from))
       await Promise.all(Array.from(parents).map((dir) => refreshDir(dir)))
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('fileOpFailed'))
+      setError(formatAppError(err, t, 'fileOpFailed'))
       await refreshDir(targetDir)
     } finally {
       setBusy(false)
@@ -1014,7 +1015,7 @@ export function FileTreePanel({
       }
       setNamePrompt(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('fileOpFailed'))
+      setError(formatAppError(err, t, 'fileOpFailed'))
     } finally {
       setBusy(false)
     }

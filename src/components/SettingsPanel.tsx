@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { APP_LOCALES } from '../i18n/locales'
 import { useSettings } from '../i18n/SettingsContext'
 import type { AppLocale, AppTheme, Workspace } from '../types'
+import { formatAppError } from '../utils/formatAppError'
 import { SelectDropdown } from './SelectDropdown'
 
 const GITHUB_URL = 'https://github.com/GoblinThug/Custom-SSH'
@@ -183,7 +184,7 @@ export function SettingsPanel({ open, onClose, onWorkspaceChange }: Props) {
         return
       }
       if ('error' in result && result.error) {
-        setDataError(`${t('importFailed')}: ${result.error}`)
+        setDataError(formatAppError(result.error, t, 'importFailed'))
         return
       }
       if ('workspace' in result) {
@@ -213,7 +214,7 @@ export function SettingsPanel({ open, onClose, onWorkspaceChange }: Props) {
       })
       if ('cancelled' in result && result.cancelled) return
       if ('error' in result && result.error) {
-        setDataError(`${t('exportFailed')}: ${result.error}`)
+        setDataError(formatAppError(result.error, t, 'exportFailed'))
         return
       }
       if ('path' in result && result.path) {

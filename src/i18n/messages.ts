@@ -247,6 +247,36 @@ export type MessageKey =
   | 'errPrivateKey'
   | 'errConnectFailed'
   | 'errConnectionFailed'
+  | 'errAuthFailed'
+  | 'errConnectTimeout'
+  | 'errConnectRefused'
+  | 'errHostNotFound'
+  | 'errHostUnreachable'
+  | 'errConnectionReset'
+  | 'errHandshakeFailed'
+  | 'errHostKey'
+  | 'errPrivateKeyInvalid'
+  | 'errPrivateKeyPassphrase'
+  | 'errSessionLost'
+  | 'errSessionNotFound'
+  | 'errShellFailed'
+  | 'errPingFailed'
+  | 'errPermissionDenied'
+  | 'errNotFound'
+  | 'errIsDirectory'
+  | 'errNotDirectory'
+  | 'errBinaryFile'
+  | 'errNoSpace'
+  | 'errAlreadyExists'
+  | 'errFileOpFailed'
+  | 'errTransferResumeFailed'
+  | 'errImportInvalidBackup'
+  | 'errImportInvalidWorkspace'
+  | 'errImportInvalidTermius'
+  | 'errImportPassphrase'
+  | 'errExportPassphrase'
+  | 'errEncryptedSecret'
+  | 'errUnknown'
   | 'reconnectSameTitle'
   | 'reconnectSameMessage'
   | 'reconnectSameConfirm'
@@ -509,6 +539,37 @@ const en: Record<MessageKey, string> = {
   errPrivateKey: 'Private key path is required',
   errConnectFailed: 'Failed to connect',
   errConnectionFailed: 'Connection failed',
+  errAuthFailed:
+    'Authentication failed. Check username, password, or private key.',
+  errConnectTimeout: 'Connection timed out. The host did not respond in time.',
+  errConnectRefused: 'Connection refused. Check the host and port.',
+  errHostNotFound: 'Host not found. Check the address or DNS.',
+  errHostUnreachable: 'Host is unreachable. Check network or VPN.',
+  errConnectionReset: 'Connection was reset by the remote host.',
+  errHandshakeFailed: 'SSH handshake failed. The server may be incompatible.',
+  errHostKey: 'Host key verification failed.',
+  errPrivateKeyInvalid: 'Private key is invalid or unsupported.',
+  errPrivateKeyPassphrase: 'Wrong passphrase for the private key.',
+  errSessionLost: 'SSH session was lost.',
+  errSessionNotFound: 'SSH session is no longer available. Reconnect.',
+  errShellFailed: 'Failed to open a terminal shell.',
+  errPingFailed: 'Server did not respond to keepalive.',
+  errPermissionDenied: 'Permission denied.',
+  errNotFound: 'File or folder not found.',
+  errIsDirectory: 'Expected a file, but found a directory.',
+  errNotDirectory: 'Expected a directory, but found a file.',
+  errBinaryFile: 'Binary files cannot be edited.',
+  errNoSpace: 'Not enough free space on the remote host.',
+  errAlreadyExists: 'A file or folder with this name already exists.',
+  errFileOpFailed: 'File operation failed.',
+  errTransferResumeFailed: 'Could not resume the interrupted transfer.',
+  errImportInvalidBackup: 'This is not a valid CustomSSH backup file.',
+  errImportInvalidWorkspace: 'Invalid CustomSSH workspace data.',
+  errImportInvalidTermius: 'Invalid Termius export file.',
+  errImportPassphrase: 'Passphrase is required to import this backup.',
+  errExportPassphrase: 'Passphrase is required to export passwords.',
+  errEncryptedSecret: 'Could not decrypt saved secrets.',
+  errUnknown: 'Something went wrong.',
   reconnectSameTitle: 'Same connection',
   reconnectSameMessage:
     'This tab is already connected to {target}. Reconnect anyway?',
@@ -774,6 +835,38 @@ const ru: Record<MessageKey, string> = {
   errPrivateKey: 'Укажите путь к приватному ключу',
   errConnectFailed: 'Не удалось подключиться',
   errConnectionFailed: 'Ошибка подключения',
+  errAuthFailed:
+    'Ошибка аутентификации. Проверьте логин, пароль или приватный ключ.',
+  errConnectTimeout: 'Время ожидания истекло. Хост не ответил вовремя.',
+  errConnectRefused: 'Подключение отклонено. Проверьте хост и порт.',
+  errHostNotFound: 'Хост не найден. Проверьте адрес или DNS.',
+  errHostUnreachable: 'Хост недоступен. Проверьте сеть или VPN.',
+  errConnectionReset: 'Соединение сброшено удалённым хостом.',
+  errHandshakeFailed:
+    'Не удалось выполнить SSH-рукопожатие. Сервер может быть несовместим.',
+  errHostKey: 'Не удалось проверить ключ хоста.',
+  errPrivateKeyInvalid: 'Приватный ключ недействителен или не поддерживается.',
+  errPrivateKeyPassphrase: 'Неверная парольная фраза для приватного ключа.',
+  errSessionLost: 'SSH-сессия была потеряна.',
+  errSessionNotFound: 'SSH-сессия больше недоступна. Подключитесь снова.',
+  errShellFailed: 'Не удалось открыть терминальную оболочку.',
+  errPingFailed: 'Сервер не ответил на проверку связи.',
+  errPermissionDenied: 'Недостаточно прав.',
+  errNotFound: 'Файл или папка не найдены.',
+  errIsDirectory: 'Ожидался файл, но это папка.',
+  errNotDirectory: 'Ожидалась папка, но это файл.',
+  errBinaryFile: 'Бинарные файлы нельзя редактировать.',
+  errNoSpace: 'На удалённом хосте недостаточно места.',
+  errAlreadyExists: 'Файл или папка с таким именем уже существуют.',
+  errFileOpFailed: 'Операция с файлом не удалась.',
+  errTransferResumeFailed: 'Не удалось продолжить прерванную передачу.',
+  errImportInvalidBackup: 'Это не файл резервной копии CustomSSH.',
+  errImportInvalidWorkspace: 'Некорректные данные рабочей области CustomSSH.',
+  errImportInvalidTermius: 'Некорректный файл экспорта Termius.',
+  errImportPassphrase: 'Для импорта этой копии нужна парольная фраза.',
+  errExportPassphrase: 'Для экспорта паролей нужна парольная фраза.',
+  errEncryptedSecret: 'Не удалось расшифровать сохранённые секреты.',
+  errUnknown: 'Что-то пошло не так.',
   reconnectSameTitle: 'То же подключение',
   reconnectSameMessage:
     'Эта вкладка уже подключена к {target}. Переподключиться всё равно?',

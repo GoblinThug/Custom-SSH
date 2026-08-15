@@ -146,7 +146,6 @@ jobs:
           path: |
             release/CustomSSH-Setup-*.exe
             release/CustomSSH-Setup-*.exe.blockmap
-            release/CustomSSH-Portable-*.exe
             release/latest.yml
           if-no-files-found: error
 
@@ -188,8 +187,7 @@ jobs:
           name: customssh-macos
           path: |
             release/CustomSSH-*.dmg
-            release/CustomSSH-*.zip
-            release/CustomSSH-*.zip.blockmap
+            release/CustomSSH-*.dmg.blockmap
             release/latest-mac.yml
           if-no-files-found: error
 
@@ -231,7 +229,6 @@ jobs:
           name: customssh-linux
           path: |
             release/CustomSSH-*.AppImage
-            release/CustomSSH-*.deb
             release/latest-linux.yml
           if-no-files-found: error
 

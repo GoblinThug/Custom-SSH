@@ -2537,7 +2537,8 @@ html[data-theme='light'] .settings-backdrop {
   left: 0;
   bottom: 0;
   z-index: 51;
-  width: min(340px, 92vw);
+  width: var(--sidebar-width);
+  max-width: 92vw;
   display: grid;
   grid-template-rows: auto 1fr;
   background: var(--bg-drawer);

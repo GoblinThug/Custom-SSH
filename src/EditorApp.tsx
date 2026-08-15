@@ -16,6 +16,7 @@ import {
 } from './editorSyntaxColors'
 import { ProgressBar } from './components/ProgressBar'
 import { useSettings } from './i18n/SettingsContext'
+import { formatAppError } from './utils/formatAppError'
 import { TAB_SIZE } from './types'
 
 function readQuery() {
@@ -95,7 +96,7 @@ export function EditorApp() {
       setOriginal(file.content)
       document.title = `${fileName} — Custom SSH`
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('editorLoadFailed'))
+      setError(formatAppError(err, t, 'editorLoadFailed'))
     } finally {
       setLoading(false)
     }
@@ -120,7 +121,7 @@ export function EditorApp() {
       setOriginal(content)
       return true
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('editorSaveFailed'))
+      setError(formatAppError(err, t, 'editorSaveFailed'))
       return false
     } finally {
       setSaving(false)
