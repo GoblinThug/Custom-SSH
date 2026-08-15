@@ -180,18 +180,35 @@ function shellQuote(value: string): string {
 
 /** Bash records a line into history before running it, so `set +o history` on
  *  the same line does not hide that line. Disable history in a prior command,
- *  run bootstrap while history is off, then drop only the short primer entry. */
+ *  run bootstrap while history is off, then scrub disk + memory history. */
 const UNIX_HISTORY_OFF =
-  'set +o history 2>/dev/null || true; setopt HIST_IGNORE_SPACE 2>/dev/null || true\n'
+  'export HISTCONTROL=ignoreboth 2>/dev/null;' +
+  'set +o history 2>/dev/null || true;' +
+  'setopt HIST_IGNORE_SPACE 2>/dev/null || true\n'
 
-/** Clear screen, remove the history-off primer if it is the last entry, re-enable. */
+/**
+ * Clear screen, strip CustomSSH bootstrap leftovers from HISTFILE (including
+ * older one-line bootstraps already saved on the server), reload in-memory
+ * history, re-enable recording.
+ */
 const UNIX_HISTORY_SCRUB_ON =
   'printf "\\033c";' +
-  '__cssh_h=$(history 1 2>/dev/null);' +
-  'case ${__cssh_h-} in *set\\ +o\\ history*|*"setopt HIST_IGNORE_SPACE"*)' +
-  ' history -d "$(awk \'{print $1}\' <<<"$__cssh_h")" 2>/dev/null || true;;' +
-  'esac;' +
-  'unset __cssh_h;' +
+  // Unique markers from our bootstrap / primers (old and new formats).
+  '__cssh_re="(__cssh_cwd|__cssh_boot|set \\\\+o history|setopt HIST_IGNORE_SPACE|PROMPT_COMMAND=.*__cssh)";' +
+  'if [ -n "${HISTFILE-}" ] && [ -f "$HISTFILE" ]; then' +
+  ' __cssh_t="${HISTFILE}.cssh.$$";' +
+  ' grep -vE "$__cssh_re" "$HISTFILE" > "$__cssh_t" 2>/dev/null' +
+  ' && mv -f "$__cssh_t" "$HISTFILE" 2>/dev/null' +
+  ' || rm -f "$__cssh_t" 2>/dev/null;' +
+  'fi;' +
+  // Zsh first (history -c is bash-only), then bash reload last so HISTSIZE=0
+  // does not wipe a freshly restored bash list.
+  'HISTSIZE=0 2>/dev/null;' +
+  'HISTSIZE=${SAVEHIST:-1000} 2>/dev/null;' +
+  'fc -R 2>/dev/null || true;' +
+  'history -c 2>/dev/null || true;' +
+  'history -r 2>/dev/null || true;' +
+  'unset __cssh_re __cssh_t;' +
   'set -o history 2>/dev/null || true\n'
 
 function colorBootstrap(isPowerShell: boolean, theme: AppTheme): string {
@@ -207,8 +224,10 @@ function colorBootstrap(isPowerShell: boolean, theme: AppTheme): string {
   }
 
   const colors = shellQuote(lsColorsForTheme(theme))
-  // No history toggles here — history must already be off (see primeSession).
+  // Leading space + history must already be off (see primeSession).
+  // `__cssh_boot` marks the line so scrub can find leftovers if recording failed.
   return [
+    ' : __cssh_boot',
     'stty -echo 2>/dev/null',
     'export TERM=xterm-256color COLORTERM=truecolor CLICOLOR=1 CLICOLOR_FORCE=1 FORCE_COLOR=3',
     `export LS_COLORS=${colors}`,
@@ -1599,13 +1618,13 @@ export class SshManager {
       await delay(280)
       stream.write(' Clear-Host\n')
     } else {
-      // 1) Turn history off in its own line (may leave a tiny entry).
-      // 2) Run bootstrap while history is off — not recorded.
-      // 3) Clear screen, delete the history-off primer, turn history back on.
+      // 1) Turn history off in its own line.
+      // 2) Run bootstrap while history is off.
+      // 3) Strip our leftovers from HISTFILE (incl. old sessions), reload, re-enable.
       stream.write(UNIX_HISTORY_OFF)
-      await delay(100)
+      await this.waitForPrompt(stream, 400)
       stream.write(`${colorBootstrap(false, theme)}\n`)
-      await delay(200)
+      await this.waitForPrompt(stream, 500)
       stream.write(UNIX_HISTORY_SCRUB_ON)
     }
     await this.waitForPrompt(stream, 900)
