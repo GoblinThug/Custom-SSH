@@ -913,10 +913,19 @@ export class SshManager {
           files[index].status = 'done'
           filesDone += 1
         } catch (err) {
-          if (!isTransferCancelledError(err)) throw err
-          files[index].status = 'cancelled'
-          filesCancelled += 1
-          this.cleanupLocalPart(job.localPath)
+          if (isTransferCancelledError(err)) {
+            files[index].status = 'cancelled'
+            filesCancelled += 1
+            this.cleanupLocalPart(job.localPath)
+          } else {
+            const message =
+              err instanceof Error ? err.message : String(err ?? 'Transfer failed')
+            files[index].status = 'error'
+            files[index].error = message
+            // Count toward completion so the dock does not hang on a sticky active file.
+            filesCancelled += 1
+            this.cleanupLocalPart(job.localPath)
+          }
         } finally {
           batch.currentKey = null
           batch.abortCurrent = null
@@ -1227,10 +1236,19 @@ export class SshManager {
           files[index].status = 'done'
           filesDone += 1
         } catch (err) {
-          if (!isTransferCancelledError(err)) throw err
-          files[index].status = 'cancelled'
-          filesCancelled += 1
-          await this.cleanupRemotePart(sessionId, job.remotePath)
+          if (isTransferCancelledError(err)) {
+            files[index].status = 'cancelled'
+            filesCancelled += 1
+            await this.cleanupRemotePart(sessionId, job.remotePath)
+          } else {
+            const message =
+              err instanceof Error ? err.message : String(err ?? 'Transfer failed')
+            files[index].status = 'error'
+            files[index].error = message
+            // Count toward completion so the dock does not hang on a sticky active file.
+            filesCancelled += 1
+            await this.cleanupRemotePart(sessionId, job.remotePath)
+          }
         } finally {
           batch.currentKey = null
           batch.abortCurrent = null

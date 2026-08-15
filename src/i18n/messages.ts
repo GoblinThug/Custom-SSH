@@ -35,10 +35,12 @@ export type MessageKey =
   | 'fileUploadManyOk'
   | 'fileUploadFailed'
   | 'fileTransferCancel'
+  | 'fileTransferDismiss'
   | 'fileTransferPending'
   | 'fileTransferActive'
   | 'fileTransferDone'
   | 'fileTransferCancelled'
+  | 'fileTransferError'
   | 'fileTransferCancelledOk'
   | 'fileTransferPartialOk'
   | 'fileUploadQueued'
@@ -64,6 +66,12 @@ export type MessageKey =
   | 'fileDropTarget'
   | 'fileOpFailed'
   | 'fileDeleteOk'
+  | 'fileMove'
+  | 'fileMoveConfirm'
+  | 'fileMoveConfirmMany'
+  | 'fileMoveOk'
+  | 'fileMoveSame'
+  | 'fileMoveInvalid'
   | 'cancel'
   | 'confirm'
   | 'editorSave'
@@ -277,16 +285,18 @@ const en: Record<MessageKey, string> = {
   fileDownloadOk: 'Downloaded',
   fileDownloadManyOk: 'Downloaded {count} files',
   fileDownloadFailed: 'Download failed',
-  fileSelectHint: 'Ctrl/Shift + click to select files or folders',
+  fileSelectHint: 'Ctrl/Shift + click to select; drag to move into a folder',
   fileUploadHere: 'Upload here',
   fileUploadOk: 'Uploaded',
   fileUploadManyOk: 'Uploaded {count} files',
   fileUploadFailed: 'Upload failed',
   fileTransferCancel: 'Cancel',
+  fileTransferDismiss: 'Remove',
   fileTransferPending: 'Queued',
   fileTransferActive: 'Active',
   fileTransferDone: 'Done',
   fileTransferCancelled: 'Cancelled',
+  fileTransferError: 'Error',
   fileTransferCancelledOk: 'Transfer cancelled',
   fileTransferPartialOk: 'Completed {done}, cancelled {cancelled}',
   fileUploadQueued: 'Added to upload queue ({count})',
@@ -312,6 +322,12 @@ const en: Record<MessageKey, string> = {
   fileDropTarget: 'Upload into {path}',
   fileOpFailed: 'Operation failed',
   fileDeleteOk: 'Deleted',
+  fileMove: 'Move',
+  fileMoveConfirm: 'Move “{name}” to “{dest}”?',
+  fileMoveConfirmMany: 'Move {count} items to “{dest}”?',
+  fileMoveOk: 'Moved {count} to {dest}',
+  fileMoveSame: 'Already in this folder',
+  fileMoveInvalid: 'Cannot move an item into itself',
   cancel: 'Cancel',
   confirm: 'OK',
   editorSave: 'Save',
@@ -533,16 +549,18 @@ const ru: Record<MessageKey, string> = {
   fileDownloadOk: 'Скачано',
   fileDownloadManyOk: 'Скачано файлов: {count}',
   fileDownloadFailed: 'Не удалось скачать',
-  fileSelectHint: 'Ctrl/Shift + клик — выбрать файлы или папки',
+  fileSelectHint: 'Ctrl/Shift + клик — выбрать; перетащите в папку, чтобы переместить',
   fileUploadHere: 'Загрузить сюда',
   fileUploadOk: 'Загружено',
   fileUploadManyOk: 'Загружено файлов: {count}',
   fileUploadFailed: 'Не удалось загрузить',
   fileTransferCancel: 'Отменить',
+  fileTransferDismiss: 'Убрать',
   fileTransferPending: 'В очереди',
   fileTransferActive: 'Идёт',
   fileTransferDone: 'Готово',
   fileTransferCancelled: 'Отменено',
+  fileTransferError: 'Ошибка',
   fileTransferCancelledOk: 'Передача отменена',
   fileTransferPartialOk: 'Готово: {done}, отменено: {cancelled}',
   fileUploadQueued: 'Добавлено в очередь загрузки ({count})',
@@ -569,6 +587,12 @@ const ru: Record<MessageKey, string> = {
   fileDropTarget: 'Загрузить в {path}',
   fileOpFailed: 'Операция не удалась',
   fileDeleteOk: 'Удалено',
+  fileMove: 'Переместить',
+  fileMoveConfirm: 'Переместить «{name}» в «{dest}»?',
+  fileMoveConfirmMany: 'Переместить элементов: {count} в «{dest}»?',
+  fileMoveOk: 'Перемещено: {count} → {dest}',
+  fileMoveSame: 'Уже в этой папке',
+  fileMoveInvalid: 'Нельзя переместить папку внутрь самой себя',
   cancel: 'Отмена',
   confirm: 'ОК',
   editorSave: 'Сохранить',

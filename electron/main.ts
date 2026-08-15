@@ -583,7 +583,8 @@ function registerIpc() {
       files: Array<{
         key: string
         path: string
-        status: 'pending' | 'active' | 'done' | 'cancelled'
+        status: 'pending' | 'active' | 'done' | 'cancelled' | 'error'
+        error?: string
       }>
     },
   ) => {
@@ -706,7 +707,8 @@ function registerIpc() {
       files: Array<{
         key: string
         path: string
-        status: 'pending' | 'active' | 'done' | 'cancelled'
+        status: 'pending' | 'active' | 'done' | 'cancelled' | 'error'
+        error?: string
       }>
     },
   ) => {

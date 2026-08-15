@@ -122,11 +122,13 @@ export type TransferFileStatus =
   | 'active'
   | 'done'
   | 'cancelled'
+  | 'error'
 
 export type TransferFileInfo = {
   key: string
   path: string
   status: TransferFileStatus
+  error?: string
 }
 
 export type TransferProgress = {

@@ -40,6 +40,11 @@ html[data-theme='dark'] {
   --titlebar-height: 40px;
   --sidebar-width: 280px;
   --editor-width: 360px;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --dur-fast: 0.16s;
+  --dur-med: 0.24s;
+  --dur-panel: 0.3s;
 }
 
 html[data-theme='light'] {
@@ -1617,7 +1622,7 @@ html[data-theme='light'] .ping-pill.is-poor {
   background: rgba(0, 0, 0, 0.28);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.22s ease;
+  transition: opacity var(--dur-med) var(--ease-out);
 }
 
 .file-tree-backdrop.is-open {
@@ -1641,10 +1646,12 @@ html[data-theme='light'] .ping-pill.is-poor {
   clip-path: inset(0 0 0 100%);
   opacity: 0;
   transition:
-    clip-path 0.28s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.18s ease,
-    width 0.28s cubic-bezier(0.22, 1, 0.36, 1),
-    flex-basis 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+    clip-path var(--dur-panel) var(--ease-out),
+    opacity var(--dur-med) ease,
+    width var(--dur-panel) var(--ease-out),
+    flex-basis var(--dur-panel) var(--ease-out),
+    border-color var(--dur-med) ease,
+    box-shadow var(--dur-med) ease;
   pointer-events: none;
 }
 
@@ -1661,6 +1668,7 @@ html[data-theme='light'] .ping-pill.is-poor {
   bottom: auto;
   z-index: 2;
   flex: 0 0 0;
+  flex-basis: 0;
   width: 0;
   max-width: 320px;
   height: 100%;
@@ -1674,10 +1682,19 @@ html[data-theme='light'] .ping-pill.is-poor {
 
 .file-tree-panel.is-pinned.is-open {
   flex: 0 0 min(320px, 40vw);
+  flex-basis: min(320px, 40vw);
   width: min(320px, 40vw);
   opacity: 1;
   border-left-color: var(--border-strong);
   overflow: hidden;
+}
+
+/* Pin while overlay-open: grow into the layout instead of snapping */
+@starting-style {
+  .file-tree-panel.is-pinned.is-open {
+    flex-basis: 0;
+    width: 0;
+  }
 }
 
 .file-tree-panel__header {
@@ -2407,6 +2424,7 @@ html[data-theme='light'] .editor-codemirror .cm-searchMatch-selected {
   padding: 24px;
   background: rgba(0, 0, 0, 0.45);
   backdrop-filter: blur(6px);
+  animation: modal-backdrop-in var(--dur-med) var(--ease-out) both;
 }
 
 html[data-theme='light'] .editor-modal-backdrop {
@@ -2420,6 +2438,7 @@ html[data-theme='light'] .editor-modal-backdrop {
   border: 1px solid var(--border-strong);
   background: var(--bg-drawer);
   box-shadow: 0 22px 48px rgba(0, 0, 0, 0.35);
+  animation: modal-card-in var(--dur-med) var(--ease-out) both;
 }
 
 .editor-modal__icon {
@@ -2500,7 +2519,7 @@ html[data-theme='light'] .editor-modal__icon {
   background: rgba(0, 0, 0, 0.28);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.22s ease;
+  transition: opacity var(--dur-med) var(--ease-out);
 }
 
 html[data-theme='light'] .settings-backdrop {
@@ -2529,8 +2548,8 @@ html[data-theme='light'] .settings-backdrop {
   clip-path: inset(0 100% 0 0);
   opacity: 0;
   transition:
-    clip-path 0.28s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.18s ease;
+    clip-path var(--dur-panel) var(--ease-out),
+    opacity var(--dur-med) ease;
   pointer-events: none;
 }
 
@@ -2666,6 +2685,7 @@ html[data-theme='light'] .settings-backdrop {
   padding: 24px;
   background: rgba(0, 0, 0, 0.45);
   backdrop-filter: blur(6px);
+  animation: modal-backdrop-in var(--dur-med) var(--ease-out) both;
 }
 
 html[data-theme='light'] .update-modal-backdrop {
@@ -2679,6 +2699,7 @@ html[data-theme='light'] .update-modal-backdrop {
   border: 1px solid var(--border-strong);
   background: var(--bg-drawer);
   box-shadow: 0 22px 48px rgba(0, 0, 0, 0.35);
+  animation: modal-card-in var(--dur-med) var(--ease-out) both;
 }
 
 .update-modal__icon {
@@ -2763,6 +2784,12 @@ html[data-theme='light'] .update-modal__icon {
   }
 }
 
+.file-tree-panel.is-dragover {
+  outline: 2px dashed var(--accent);
+  outline-offset: -4px;
+  background: color-mix(in srgb, var(--bg-drawer) 88%, rgba(10, 132, 255, 0.14));
+}
+
 .file-tree-panel__body.is-dragover {
   outline: 2px dashed var(--accent);
   outline-offset: -6px;
@@ -2774,11 +2801,16 @@ html[data-theme='light'] .update-modal__icon {
   border-top: 1px solid var(--border-strong);
   background: color-mix(in srgb, var(--bg-drawer) 92%, transparent);
   backdrop-filter: blur(16px);
+  animation: transfer-dock-in var(--dur-panel) var(--ease-out) both;
+}
+
+.transfer-dock.is-leaving {
+  animation: transfer-dock-out var(--dur-med) var(--ease-in) both;
+  pointer-events: none;
 }
 
 .transfer-dock__bar {
-  display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr) minmax(120px, 220px) auto;
+  display: flex;
   align-items: center;
   gap: 10px;
   width: 100%;
@@ -2787,6 +2819,7 @@ html[data-theme='light'] .update-modal__icon {
   color: var(--text-secondary);
   text-align: left;
   cursor: pointer;
+  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
 }
 
 .transfer-dock__bar:hover {
@@ -2797,10 +2830,12 @@ html[data-theme='light'] .update-modal__icon {
 .transfer-dock__bar-icon {
   display: grid;
   place-items: center;
+  flex: 0 0 auto;
   color: var(--accent-soft, var(--accent));
 }
 
 .transfer-dock__bar-title {
+  flex: 0 0 auto;
   font-size: 12px;
   font-weight: 600;
   color: var(--text);
@@ -2808,12 +2843,19 @@ html[data-theme='light'] .update-modal__icon {
 }
 
 .transfer-dock__bar-summary {
+  flex: 1 1 auto;
   min-width: 0;
   font-size: 12px;
   color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.transfer-dock__bar-progress {
+  flex: 0 1 220px;
+  min-width: 120px;
+  max-width: 220px;
 }
 
 .transfer-dock__bar-progress .progress {
@@ -2827,11 +2869,15 @@ html[data-theme='light'] .update-modal__icon {
 .transfer-dock__bar-chevron {
   display: grid;
   place-items: center;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
   opacity: 0.7;
 }
 
 .transfer-dock__bar-chevron .chevron-icon {
   transform: rotate(-90deg);
+  transition: transform var(--dur-med) var(--ease-out);
 }
 
 .transfer-dock__bar-chevron .chevron-icon.is-open {
@@ -2841,10 +2887,29 @@ html[data-theme='light'] .update-modal__icon {
 .transfer-dock__panel {
   display: grid;
   gap: 10px;
+  max-height: 0;
+  padding: 0 14px;
+  overflow: hidden;
+  opacity: 0;
+  border-top: 1px solid transparent;
+  transform: translateY(-4px);
+  pointer-events: none;
+  transition:
+    max-height var(--dur-panel) var(--ease-out),
+    opacity var(--dur-med) ease,
+    padding var(--dur-med) ease,
+    border-color var(--dur-fast) ease,
+    transform var(--dur-med) var(--ease-out);
+}
+
+.transfer-dock.is-expanded .transfer-dock__panel {
   max-height: min(42vh, 360px);
   padding: 0 14px 12px;
-  overflow: hidden;
-  border-top: 1px solid var(--border);
+  opacity: 1;
+  border-top-color: var(--border);
+  transform: translateY(0);
+  overflow: auto;
+  pointer-events: auto;
 }
 
 .transfer-dock__panel-head {
@@ -2902,6 +2967,7 @@ html[data-theme='light'] .update-modal__icon {
   border-radius: 10px;
   border: 1px solid var(--border);
   background: var(--bg-elevated);
+  animation: transfer-item-in var(--dur-med) var(--ease-out) both;
 }
 
 .transfer-dock__batch.is-finished {
@@ -2956,9 +3022,27 @@ html[data-theme='light'] .update-modal__icon {
   background: rgba(10, 132, 255, 0.1);
 }
 
-.transfer-dock__file.is-cancelled,
 .transfer-dock__file.is-done {
   opacity: 0.65;
+}
+
+.transfer-dock__file.is-cancelled {
+  opacity: 0.72;
+}
+
+.transfer-dock__file.is-error {
+  background: rgba(255, 69, 58, 0.12);
+  outline: 1px solid rgba(255, 69, 58, 0.35);
+  outline-offset: -1px;
+}
+
+.transfer-dock__file.is-error .transfer-dock__file-status,
+.transfer-dock__file.is-error .transfer-dock__file-name {
+  color: #ff6b63;
+}
+
+.transfer-dock__file.is-error .transfer-dock__file-path {
+  color: rgba(255, 107, 99, 0.75);
 }
 
 .transfer-dock__file-main {
@@ -2992,13 +3076,17 @@ html[data-theme='light'] .update-modal__icon {
 
 .transfer-dock__cancel {
   flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
   height: 24px;
-  padding: 0 8px;
+  padding: 0;
   border-radius: 6px;
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.04);
   color: var(--text-secondary);
-  font-size: 11px;
+  cursor: pointer;
 }
 
 .transfer-dock__cancel:hover {
@@ -3016,6 +3104,15 @@ html[data-theme='light'] .transfer-dock__file.is-active {
   background: rgba(10, 132, 255, 0.08);
 }
 
+html[data-theme='light'] .transfer-dock__file.is-error {
+  background: rgba(255, 59, 48, 0.1);
+}
+
+html[data-theme='light'] .transfer-dock__file.is-error .transfer-dock__file-status,
+html[data-theme='light'] .transfer-dock__file.is-error .transfer-dock__file-name {
+  color: #d70015;
+}
+
 .file-tree-prompt-backdrop {
   position: fixed;
   inset: 0;
@@ -3025,6 +3122,7 @@ html[data-theme='light'] .transfer-dock__file.is-active {
   padding: 24px;
   background: rgba(0, 0, 0, 0.45);
   backdrop-filter: blur(6px);
+  animation: modal-backdrop-in var(--dur-med) var(--ease-out) both;
 }
 
 .file-tree-prompt {
@@ -3036,10 +3134,24 @@ html[data-theme='light'] .transfer-dock__file.is-active {
   border: 1px solid var(--border-strong);
   background: var(--bg-drawer);
   box-shadow: 0 22px 48px rgba(0, 0, 0, 0.35);
+  animation: modal-card-in var(--dur-med) var(--ease-out) both;
 }
 
 .file-tree-prompt .field {
   gap: 6px;
+}
+
+.file-tree-prompt__title {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.file-tree-prompt__message {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-secondary);
 }
 
 .file-tree-prompt__actions {
@@ -3228,6 +3340,70 @@ html[data-theme='light'] .hotkeys-conflict {
   }
   50% {
     box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.18);
+  }
+}
+
+@keyframes modal-backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes modal-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes transfer-dock-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes transfer-dock-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@keyframes transfer-item-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
 

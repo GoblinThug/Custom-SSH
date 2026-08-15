@@ -46,6 +46,27 @@ function parentDir(filePath: string): string {
   return `/${parts.slice(0, -1).join('/')}`
 }
 
+function joinRemote(dir: string, name: string): string {
+  if (dir === '/') return `/${name}`
+  return `${dir.replace(/\/+$/, '')}/${name}`
+}
+
+function isRemoteDescendant(path: string, ancestor: string): boolean {
+  if (ancestor === '/') return path !== '/'
+  return path === ancestor || path.startsWith(`${ancestor}/`)
+}
+
+function canMovePathsTo(sources: string[], targetDir: string): boolean {
+  return sources.some((src) => {
+    if (!src || src === '/') return false
+    if (src === targetDir) return false
+    if (isRemoteDescendant(targetDir, src)) return false
+    return parentDir(src) !== targetDir
+  })
+}
+
+const INTERNAL_MOVE_MIME = 'application/x-customssh-paths'
+
 function displayName(path: string): string {
   if (path === '/') return 'root'
   const parts = path.split('/').filter(Boolean)
@@ -158,8 +179,10 @@ function TreeNode({
   onEntryClick,
   onEntryContextMenu,
   onFileDoubleClick,
-  onDropTarget,
-  onDropFiles,
+  onEntryDragStart,
+  onEntryDragEnd,
+  onTreeDragOver,
+  onTreeDrop,
   goLabel,
   loadingLabel,
   emptyLabel,
@@ -179,8 +202,10 @@ function TreeNode({
   onEntryClick: (entry: RemoteFsEntry, event: ReactMouseEvent) => void
   onEntryContextMenu: (entry: RemoteFsEntry, event: ReactMouseEvent) => void
   onFileDoubleClick: (entry: RemoteFsEntry) => void
-  onDropTarget: (remoteDir: string) => void
-  onDropFiles: (remoteDir: string, event: ReactDragEvent) => void
+  onEntryDragStart: (entry: RemoteFsEntry, event: ReactDragEvent) => void
+  onEntryDragEnd: () => void
+  onTreeDragOver: (remoteDir: string, event: ReactDragEvent) => void
+  onTreeDrop: (remoteDir: string, event: ReactDragEvent) => void
   goLabel: string
   loadingLabel: string
   emptyLabel: string
@@ -202,6 +227,7 @@ function TreeNode({
   }
   const folderSelected = path !== '/' && selectedPaths.has(path)
   const isDropTarget = dropTarget === path
+  const canDragFolder = path !== '/'
 
   return (
     <div className="file-tree__node">
@@ -211,17 +237,17 @@ function TreeNode({
         }${isDropTarget ? ' is-drop-target' : ''}`}
         data-tree-path={path}
         style={{ paddingLeft: 10 + depth * 14 }}
-        onDragOver={(event) => {
-          event.preventDefault()
-          event.stopPropagation()
-          event.dataTransfer.dropEffect = 'copy'
-          onDropTarget(path)
+        draggable={canDragFolder}
+        onDragStart={(event) => {
+          if (!canDragFolder) {
+            event.preventDefault()
+            return
+          }
+          onEntryDragStart(folderEntry, event)
         }}
-        onDrop={(event) => {
-          event.preventDefault()
-          event.stopPropagation()
-          onDropFiles(path, event)
-        }}
+        onDragEnd={onEntryDragEnd}
+        onDragOver={(event) => onTreeDragOver(path, event)}
+        onDrop={(event) => onTreeDrop(path, event)}
         onContextMenu={(event) => {
           event.preventDefault()
           onEntryContextMenu(folderEntry, event)
@@ -251,6 +277,8 @@ function TreeNode({
             type="button"
             className="file-tree__go"
             title={`cd ${path}`}
+            draggable={false}
+            onDragStart={(event) => event.preventDefault()}
             onClick={(event) => {
               event.stopPropagation()
               onGo(path)
@@ -290,8 +318,10 @@ function TreeNode({
                 onEntryClick={onEntryClick}
                 onEntryContextMenu={onEntryContextMenu}
                 onFileDoubleClick={onFileDoubleClick}
-                onDropTarget={onDropTarget}
-                onDropFiles={onDropFiles}
+                onEntryDragStart={onEntryDragStart}
+                onEntryDragEnd={onEntryDragEnd}
+                onTreeDragOver={onTreeDragOver}
+                onTreeDrop={onTreeDrop}
                 goLabel={goLabel}
                 loadingLabel={loadingLabel}
                 emptyLabel={emptyLabel}
@@ -305,19 +335,13 @@ function TreeNode({
                 }`}
                 style={{ paddingLeft: 24 + (depth + 1) * 14 }}
                 title={entry.path}
+                draggable
+                onDragStart={(event) => onEntryDragStart(entry, event)}
+                onDragEnd={onEntryDragEnd}
                 onClick={(event) => onEntryClick(entry, event)}
                 onContextMenu={(event) => onEntryContextMenu(entry, event)}
-                onDragOver={(event) => {
-                  event.preventDefault()
-                  event.stopPropagation()
-                  event.dataTransfer.dropEffect = 'copy'
-                  onDropTarget(parentDir(entry.path))
-                }}
-                onDrop={(event) => {
-                  event.preventDefault()
-                  event.stopPropagation()
-                  onDropFiles(parentDir(entry.path), event)
-                }}
+                onDragOver={(event) => onTreeDragOver(parentDir(entry.path), event)}
+                onDrop={(event) => onTreeDrop(parentDir(entry.path), event)}
                 onDoubleClick={(event) => {
                   event.preventDefault()
                   onFileDoubleClick(entry)
@@ -374,13 +398,25 @@ export function FileTreePanel({
   const [error, setError] = useState<string>()
   const [busy, setBusy] = useState(false)
   const [actionNote, setActionNote] = useState<string>()
-  const [dragOver, setDragOver] = useState(false)
+  /** External file drag is over the app window (beacon the panel). */
+  const [appFileDrag, setAppFileDrag] = useState(false)
+  /** Cursor is inside the tree list — switch from panel beacon to folder target. */
+  const [overTree, setOverTree] = useState(false)
   const [dropTarget, setDropTarget] = useState<string | null>(null)
+  const appDragDepthRef = useRef(0)
+  const internalDragPathsRef = useRef<string[] | null>(null)
   const [namePrompt, setNamePrompt] = useState<{
     mode: 'mkdir' | 'mkfile' | 'rename'
     parentPath: string
     fromPath?: string
     value: string
+  } | null>(null)
+  const [confirmPrompt, setConfirmPrompt] = useState<{
+    title: string
+    message: string
+    confirmLabel: string
+    danger?: boolean
+    action: { type: 'delete'; paths: string[] } | { type: 'move'; moves: Array<{ from: string; to: string }>; targetDir: string }
   } | null>(null)
   const [filterQuery, setFilterQuery] = useState('')
   const [pathDraft, setPathDraft] = useState('/')
@@ -394,6 +430,72 @@ export function FileTreePanel({
   const uploadQueueRef = useRef<
     Array<{ remoteDir: string; localPaths?: string[] }>
   >([])
+
+  useEffect(() => {
+    if (!open || !sessionId) {
+      appDragDepthRef.current = 0
+      setAppFileDrag(false)
+      setOverTree(false)
+      setDropTarget(null)
+      return
+    }
+
+    const hasFiles = (event: DragEvent) =>
+      Array.from(event.dataTransfer?.types ?? []).includes('Files')
+
+    const clearAppDrag = () => {
+      appDragDepthRef.current = 0
+      setAppFileDrag(false)
+      setOverTree(false)
+      setDropTarget(null)
+    }
+
+    const onDragEnter = (event: DragEvent) => {
+      if (!hasFiles(event)) return
+      appDragDepthRef.current += 1
+      setAppFileDrag(true)
+    }
+
+    const onDragOver = (event: DragEvent) => {
+      if (!hasFiles(event)) return
+      // Keep the OS "copy" cursor while files are over the window.
+      event.preventDefault()
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+      setAppFileDrag(true)
+    }
+
+    const onDragLeave = (event: DragEvent) => {
+      if (!hasFiles(event)) return
+      appDragDepthRef.current = Math.max(0, appDragDepthRef.current - 1)
+      if (appDragDepthRef.current === 0) {
+        setAppFileDrag(false)
+        setOverTree(false)
+        setDropTarget(null)
+      }
+    }
+
+    const onDrop = () => {
+      clearAppDrag()
+    }
+
+    const onDragEnd = () => {
+      clearAppDrag()
+    }
+
+    window.addEventListener('dragenter', onDragEnter)
+    window.addEventListener('dragover', onDragOver)
+    window.addEventListener('dragleave', onDragLeave)
+    window.addEventListener('drop', onDrop)
+    window.addEventListener('dragend', onDragEnd)
+    return () => {
+      window.removeEventListener('dragenter', onDragEnter)
+      window.removeEventListener('dragover', onDragOver)
+      window.removeEventListener('dragleave', onDragLeave)
+      window.removeEventListener('drop', onDrop)
+      window.removeEventListener('dragend', onDragEnd)
+      clearAppDrag()
+    }
+  }, [open, sessionId])
 
   useEffect(() => {
     setFilterQuery('')
@@ -446,6 +548,8 @@ export function FileTreePanel({
     if (!open) {
       setSelectedPaths(new Set())
       lastSelectedRef.current = null
+      setConfirmPrompt(null)
+      setNamePrompt(null)
     }
   }, [open, sessionId, refresh])
 
@@ -682,9 +786,9 @@ export function FileTreePanel({
     }
   }
 
-  const deleteItems = async (remotePaths: string[]) => {
+  const deleteItems = (remotePaths: string[]) => {
     if (!sessionId || remotePaths.length === 0) return
-    const ok = await window.sshApi.confirmDialog({
+    setConfirmPrompt({
       title: t('fileDelete'),
       message:
         remotePaths.length === 1
@@ -695,10 +799,13 @@ export function FileTreePanel({
               count: remotePaths.length,
             }),
       confirmLabel: t('fileDelete'),
-      cancelLabel: t('cancel'),
+      danger: true,
+      action: { type: 'delete', paths: remotePaths },
     })
-    if (!ok) return
+  }
 
+  const runDeleteItems = async (remotePaths: string[]) => {
+    if (!sessionId || remotePaths.length === 0) return
     setBusy(true)
     setError(undefined)
     try {
@@ -714,6 +821,170 @@ export function FileTreePanel({
     } finally {
       setBusy(false)
     }
+  }
+
+  const moveItems = (remotePaths: string[], targetDir: string) => {
+    if (!sessionId || remotePaths.length === 0) return
+    const moves = remotePaths
+      .filter((src) => src && src !== '/')
+      .filter((src) => parentDir(src) !== targetDir)
+      .filter((src) => src !== targetDir && !isRemoteDescendant(targetDir, src))
+      .map((src) => ({
+        from: src,
+        to: joinRemote(targetDir, displayName(src)),
+      }))
+      .filter((item) => item.from !== item.to)
+
+    if (moves.length === 0) {
+      setActionNote(t('fileMoveSame'))
+      return
+    }
+
+    setConfirmPrompt({
+      title: t('fileMove'),
+      message:
+        moves.length === 1
+          ? formatMessage(t('fileMoveConfirm'), {
+              name: displayName(moves[0].from),
+              dest: targetDir,
+            })
+          : formatMessage(t('fileMoveConfirmMany'), {
+              count: moves.length,
+              dest: targetDir,
+            }),
+      confirmLabel: t('fileMove'),
+      action: { type: 'move', moves, targetDir },
+    })
+  }
+
+  const runMoveItems = async (
+    moves: Array<{ from: string; to: string }>,
+    targetDir: string,
+  ) => {
+    if (!sessionId || moves.length === 0) return
+    setBusy(true)
+    setError(undefined)
+    try {
+      for (const item of moves) {
+        await window.sshApi.fsRename(sessionId, item.from, item.to)
+      }
+      setActionNote(
+        formatMessage(t('fileMoveOk'), {
+          count: moves.length,
+          dest: targetDir,
+        }),
+      )
+      clearSelection()
+      const parents = new Set<string>([targetDir])
+      for (const item of moves) parents.add(parentDir(item.from))
+      await Promise.all(Array.from(parents).map((dir) => refreshDir(dir)))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('fileOpFailed'))
+      await refreshDir(targetDir)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const submitConfirmPrompt = async () => {
+    const prompt = confirmPrompt
+    setConfirmPrompt(null)
+    if (!prompt) return
+    if (prompt.action.type === 'delete') {
+      await runDeleteItems(prompt.action.paths)
+      return
+    }
+    await runMoveItems(prompt.action.moves, prompt.action.targetDir)
+  }
+
+  const isExternalFileDrag = (event: ReactDragEvent | DragEvent) =>
+    Array.from(event.dataTransfer?.types ?? []).includes('Files')
+
+  const readInternalMovePaths = (event: ReactDragEvent): string[] | null => {
+    if (internalDragPathsRef.current?.length) {
+      return internalDragPathsRef.current
+    }
+    try {
+      const raw = event.dataTransfer.getData(INTERNAL_MOVE_MIME)
+      if (!raw) return null
+      const parsed = JSON.parse(raw) as unknown
+      if (!Array.isArray(parsed)) return null
+      return parsed.filter((item): item is string => typeof item === 'string')
+    } catch {
+      return null
+    }
+  }
+
+  const handleEntryDragStart = (
+    entry: RemoteFsEntry,
+    event: ReactDragEvent,
+  ) => {
+    if (entry.path === '/') {
+      event.preventDefault()
+      return
+    }
+    const paths =
+      selectedPaths.has(entry.path) && selectedPaths.size > 0
+        ? Array.from(selectedPaths)
+        : [entry.path]
+    internalDragPathsRef.current = paths
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData(INTERNAL_MOVE_MIME, JSON.stringify(paths))
+    event.dataTransfer.setData('text/plain', paths.join('\n'))
+  }
+
+  const handleEntryDragEnd = () => {
+    internalDragPathsRef.current = null
+    setDropTarget(null)
+    setOverTree(false)
+  }
+
+  const handleTreeDragOver = (targetDir: string, event: ReactDragEvent) => {
+    event.preventDefault()
+    event.stopPropagation()
+    setOverTree(true)
+    if (isExternalFileDrag(event)) {
+      event.dataTransfer.dropEffect = 'copy'
+      setDropTarget(targetDir)
+      return
+    }
+    const sources = internalDragPathsRef.current
+    if (sources && canMovePathsTo(sources, targetDir)) {
+      event.dataTransfer.dropEffect = 'move'
+      setDropTarget(targetDir)
+      return
+    }
+    event.dataTransfer.dropEffect = 'none'
+    setDropTarget(null)
+  }
+
+  const handleTreeDrop = (targetDir: string, event: ReactDragEvent) => {
+    event.preventDefault()
+    event.stopPropagation()
+    setAppFileDrag(false)
+    setOverTree(false)
+    setDropTarget(null)
+    appDragDepthRef.current = 0
+
+    if (isExternalFileDrag(event)) {
+      const localPaths = pathsFromDrop(event)
+      internalDragPathsRef.current = null
+      if (localPaths.length === 0) {
+        setError(t('fileUploadFailed'))
+        return
+      }
+      void uploadTo(targetDir || cwd || '/', localPaths)
+      return
+    }
+
+    const sources = readInternalMovePaths(event)
+    internalDragPathsRef.current = null
+    if (!sources?.length) return
+    if (!canMovePathsTo(sources, targetDir)) {
+      setError(t('fileMoveInvalid'))
+      return
+    }
+    moveItems(sources, targetDir)
   }
 
   const submitNamePrompt = async () => {
@@ -779,20 +1050,35 @@ export function FileTreePanel({
   const handlePanelDragOver = (event: ReactDragEvent) => {
     if (!sessionId) return
     event.preventDefault()
-    event.dataTransfer.dropEffect = 'copy'
-    setDragOver(true)
-    setDropTarget(cwd || '/')
+    event.stopPropagation()
+    setOverTree(true)
+    if (isExternalFileDrag(event)) {
+      event.dataTransfer.dropEffect = 'copy'
+      setDropTarget(null)
+      return
+    }
+    const sources = internalDragPathsRef.current
+    const target = cwd || '/'
+    if (sources && canMovePathsTo(sources, target)) {
+      event.dataTransfer.dropEffect = 'move'
+      setDropTarget(target)
+      return
+    }
+    event.dataTransfer.dropEffect = 'none'
+    setDropTarget(null)
   }
 
   const handlePanelDragLeave = (event: ReactDragEvent) => {
     if (event.currentTarget.contains(event.relatedTarget as Node)) return
-    setDragOver(false)
+    setOverTree(false)
     setDropTarget(null)
   }
 
   const finishDrop = (remoteDir: string, event: ReactDragEvent) => {
-    setDragOver(false)
+    setAppFileDrag(false)
+    setOverTree(false)
     setDropTarget(null)
+    appDragDepthRef.current = 0
     if (!sessionId) return
     const localPaths = pathsFromDrop(event)
     if (localPaths.length === 0) {
@@ -804,7 +1090,24 @@ export function FileTreePanel({
 
   const handlePanelDrop = (event: ReactDragEvent) => {
     event.preventDefault()
-    finishDrop(dropTarget || cwd || '/', event)
+    event.stopPropagation()
+    const targetDir = dropTarget || cwd || '/'
+    if (isExternalFileDrag(event)) {
+      finishDrop(targetDir, event)
+      return
+    }
+    const sources = readInternalMovePaths(event)
+    internalDragPathsRef.current = null
+    setAppFileDrag(false)
+    setOverTree(false)
+    setDropTarget(null)
+    appDragDepthRef.current = 0
+    if (!sources?.length) return
+    if (!canMovePathsTo(sources, targetDir)) {
+      setError(t('fileMoveInvalid'))
+      return
+    }
+    void moveItems(sources, targetDir)
   }
 
   const handleEntryClick = (entry: RemoteFsEntry, event: ReactMouseEvent) => {
@@ -942,7 +1245,7 @@ export function FileTreePanel({
       <aside
         className={`file-tree-panel${open ? ' is-open' : ''}${
           pinned ? ' is-pinned' : ''
-        }`}
+        }${appFileDrag && !overTree ? ' is-dragover' : ''}`}
         aria-hidden={!open}
       >
         <div className="file-tree-panel__header">
@@ -1048,8 +1351,13 @@ export function FileTreePanel({
 
         <div
           ref={bodyRef}
-          className={`file-tree-panel__body${dragOver ? ' is-dragover' : ''}`}
+          className="file-tree-panel__body"
           onClick={() => clearSelection()}
+          onDragEnter={(event) => {
+            if (!sessionId) return
+            event.preventDefault()
+            setOverTree(true)
+          }}
           onDragOver={handlePanelDragOver}
           onDragLeave={handlePanelDragLeave}
           onDrop={handlePanelDrop}
@@ -1059,8 +1367,10 @@ export function FileTreePanel({
           ) : null}
           {sessionId ? (
             <div className="file-tree__hint">
-              {dragOver && dropTarget
-                ? formatMessage(t('fileDropTarget'), { path: dropTarget })
+              {appFileDrag
+                ? formatMessage(t('fileDropTarget'), {
+                    path: dropTarget || cwd || '/',
+                  })
                 : t('fileDropHint')}
             </div>
           ) : null}
@@ -1089,8 +1399,10 @@ export function FileTreePanel({
                 onEntryClick={handleEntryClick}
                 onEntryContextMenu={handleEntryContextMenu}
                 onFileDoubleClick={(entry) => void openEditor(entry.path)}
-                onDropTarget={setDropTarget}
-                onDropFiles={finishDrop}
+                onEntryDragStart={handleEntryDragStart}
+                onEntryDragEnd={handleEntryDragEnd}
+                onTreeDragOver={handleTreeDragOver}
+                onTreeDrop={handleTreeDrop}
                 goLabel={t('goTo')}
                 loadingLabel={t('loading')}
                 emptyLabel={
@@ -1208,6 +1520,60 @@ export function FileTreePanel({
                 className="btn btn-secondary"
                 disabled={busy}
                 onClick={() => setNamePrompt(null)}
+              >
+                {t('cancel')}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {confirmPrompt ? (
+        <div
+          className="file-tree-prompt-backdrop"
+          role="presentation"
+          onClick={() => {
+            if (!busy) setConfirmPrompt(null)
+          }}
+        >
+          <div
+            className="file-tree-prompt"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="file-tree-confirm-title"
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape' && !busy) {
+                event.preventDefault()
+                setConfirmPrompt(null)
+              }
+              if (event.key === 'Enter' && !busy) {
+                event.preventDefault()
+                void submitConfirmPrompt()
+              }
+            }}
+          >
+            <div className="field">
+              <div id="file-tree-confirm-title" className="file-tree-prompt__title">
+                {confirmPrompt.title}
+              </div>
+              <p className="file-tree-prompt__message">{confirmPrompt.message}</p>
+            </div>
+            <div className="file-tree-prompt__actions">
+              <button
+                type="button"
+                className={`btn ${confirmPrompt.danger ? 'btn-danger' : 'btn-primary'}`}
+                disabled={busy}
+                autoFocus
+                onClick={() => void submitConfirmPrompt()}
+              >
+                {confirmPrompt.confirmLabel}
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={busy}
+                onClick={() => setConfirmPrompt(null)}
               >
                 {t('cancel')}
               </button>

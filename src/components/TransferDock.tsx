@@ -3,12 +3,13 @@ import { useSettings } from '../i18n/SettingsContext'
 import { ChevronIcon } from './ChevronIcon'
 import { ProgressBar } from './ProgressBar'
 
-type FileStatus = 'pending' | 'active' | 'done' | 'cancelled'
+type FileStatus = 'pending' | 'active' | 'done' | 'cancelled' | 'error'
 
 type TransferFile = {
   key: string
   path: string
   status: FileStatus
+  error?: string
 }
 
 type TransferBatch = {
@@ -38,11 +39,38 @@ function basename(remotePath: string): string {
   return parts[parts.length - 1] || remotePath
 }
 
+function isTerminalStatus(status: FileStatus) {
+  return status === 'done' || status === 'cancelled' || status === 'error'
+}
+
+function batchIsFinished(files: TransferFile[], filesTotal: number) {
+  if (filesTotal <= 0) return false
+  const settled = files.filter((file) => isTerminalStatus(file.status)).length
+  return settled >= filesTotal
+}
+
+function CancelIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M6 6l12 12M18 6L6 18"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
+const DOCK_EXIT_MS = 240
+
 export function TransferDock() {
   const { t } = useSettings()
   const [expanded, setExpanded] = useState(false)
   const [batches, setBatches] = useState<TransferBatch[]>([])
   const [queuedUploads, setQueuedUploads] = useState(0)
+  const [dockMounted, setDockMounted] = useState(false)
+  const [dockLeaving, setDockLeaving] = useState(false)
 
   useEffect(() => {
     const apply = (
@@ -59,9 +87,7 @@ export function TransferDock() {
     ) => {
       if (!progress.transferId) return
       setBatches((prev) => {
-        const finished =
-          progress.filesTotal > 0 &&
-          progress.filesDone + progress.filesCancelled >= progress.filesTotal
+        const finished = batchIsFinished(progress.files, progress.filesTotal)
         const next: TransferBatch = {
           transferId: progress.transferId,
           mode,
@@ -177,18 +203,52 @@ export function TransferDock() {
   const cancelFile = (transferId: string, fileKey: string) => {
     void window.sshApi.cancelTransferFile(transferId, fileKey)
     setBatches((prev) =>
-      prev.map((batch) => {
-        if (batch.transferId !== transferId) return batch
-        return {
-          ...batch,
-          files: batch.files.map((file) =>
+      prev
+        .map((batch) => {
+          if (batch.transferId !== transferId) return batch
+          const files = batch.files.map((file) =>
             file.key === fileKey &&
             (file.status === 'pending' || file.status === 'active')
-              ? { ...file, status: 'cancelled' }
+              ? { ...file, status: 'cancelled' as const }
               : file,
-          ),
-        }
-      }),
+          )
+          const filesCancelled = files.filter(
+            (file) => file.status === 'cancelled' || file.status === 'error',
+          ).length
+          const filesDone = files.filter((file) => file.status === 'done').length
+          return {
+            ...batch,
+            files,
+            filesCancelled,
+            filesDone,
+            finished: batchIsFinished(files, batch.filesTotal),
+          }
+        })
+        .filter((batch) => batch.files.length > 0),
+    )
+  }
+
+  const dismissFile = (transferId: string, fileKey: string) => {
+    setBatches((prev) =>
+      prev
+        .map((batch) => {
+          if (batch.transferId !== transferId) return batch
+          const files = batch.files.filter((file) => file.key !== fileKey)
+          if (files.length === 0) return null
+          const filesCancelled = files.filter(
+            (file) => file.status === 'cancelled' || file.status === 'error',
+          ).length
+          const filesDone = files.filter((file) => file.status === 'done').length
+          return {
+            ...batch,
+            files,
+            filesTotal: files.length,
+            filesCancelled,
+            filesDone,
+            finished: batchIsFinished(files, files.length),
+          }
+        })
+        .filter((batch): batch is TransferBatch => batch !== null),
     )
   }
 
@@ -197,11 +257,29 @@ export function TransferDock() {
     if (queuedUploads === 0) setExpanded(false)
   }
 
-  if (!visible) return null
+  useEffect(() => {
+    if (visible) {
+      setDockMounted(true)
+      setDockLeaving(false)
+      return
+    }
+    if (!dockMounted) return
+    setDockLeaving(true)
+    setExpanded(false)
+    const timer = window.setTimeout(() => {
+      setDockMounted(false)
+      setDockLeaving(false)
+    }, DOCK_EXIT_MS)
+    return () => window.clearTimeout(timer)
+  }, [visible, dockMounted])
+
+  if (!dockMounted) return null
 
   return (
     <div
-      className={`transfer-dock${expanded ? ' is-expanded' : ''}`}
+      className={`transfer-dock${expanded ? ' is-expanded' : ''}${
+        dockLeaving ? ' is-leaving' : ''
+      }`}
       aria-live="polite"
     >
       <button
@@ -239,8 +317,7 @@ export function TransferDock() {
         </span>
       </button>
 
-      {expanded ? (
-        <div className="transfer-dock__panel">
+      <div className="transfer-dock__panel" aria-hidden={!expanded}>
           <div className="transfer-dock__panel-head">
             <div className="transfer-dock__panel-title">
               {t('transferDockTitle')}
@@ -293,16 +370,17 @@ export function TransferDock() {
                 <div className="transfer-dock__files">
                   {batch.files.map((file) => {
                     const canCancel =
-                      !batch.finished &&
-                      (file.status === 'pending' || file.status === 'active')
+                      file.status === 'pending' || file.status === 'active'
                     const statusLabel =
                       file.status === 'done'
                         ? t('fileTransferDone')
                         : file.status === 'cancelled'
                           ? t('fileTransferCancelled')
-                          : file.status === 'active'
-                            ? t('fileTransferActive')
-                            : t('fileTransferPending')
+                          : file.status === 'error'
+                            ? t('fileTransferError')
+                            : file.status === 'active'
+                              ? t('fileTransferActive')
+                              : t('fileTransferPending')
                     return (
                       <div
                         key={file.key}
@@ -310,10 +388,13 @@ export function TransferDock() {
                       >
                         <div
                           className="transfer-dock__file-main"
-                          title={file.path}
+                          title={file.error || file.path}
                         >
                           <span className="transfer-dock__file-status">
                             {statusLabel}
+                            {file.status === 'error' && file.error
+                              ? `: ${file.error}`
+                              : ''}
                           </span>
                           <span className="transfer-dock__file-name">
                             {basename(file.path)}
@@ -322,17 +403,27 @@ export function TransferDock() {
                             {file.path}
                           </span>
                         </div>
-                        {canCancel ? (
-                          <button
-                            type="button"
-                            className="transfer-dock__cancel"
-                            onClick={() =>
-                              cancelFile(batch.transferId, file.key)
-                            }
-                          >
-                            {t('fileTransferCancel')}
-                          </button>
-                        ) : null}
+                        <button
+                          type="button"
+                          className="transfer-dock__cancel"
+                          title={
+                            canCancel
+                              ? t('fileTransferCancel')
+                              : t('fileTransferDismiss')
+                          }
+                          aria-label={
+                            canCancel
+                              ? t('fileTransferCancel')
+                              : t('fileTransferDismiss')
+                          }
+                          onClick={() =>
+                            canCancel
+                              ? cancelFile(batch.transferId, file.key)
+                              : dismissFile(batch.transferId, file.key)
+                          }
+                        >
+                          <CancelIcon />
+                        </button>
                       </div>
                     )
                   })}
@@ -341,7 +432,6 @@ export function TransferDock() {
             ))}
           </div>
         </div>
-      ) : null}
     </div>
   )
 }
