@@ -79,6 +79,65 @@ type TrayPopupState = {
 }
 
 let trayPopupState: TrayPopupState = { sessions: [], connections: [] }
+/** Last known tray icon rect (click bounds or getBounds); reused when height changes. */
+let lastTrayAnchor: Electron.Rectangle | null = null
+
+type PanelEdge = 'top' | 'bottom' | 'left' | 'right'
+
+function clampTrayCoord(value: number, min: number, max: number) {
+  if (max < min) return min
+  return Math.min(Math.max(value, min), max)
+}
+
+/** Detect dock/taskbar/menu-bar side from display workArea insets. */
+function panelEdgeFromWorkArea(
+  bounds: Electron.Rectangle,
+  work: Electron.Rectangle,
+): PanelEdge | null {
+  const gaps: Array<[PanelEdge, number]> = [
+    ['top', work.y - bounds.y],
+    ['left', work.x - bounds.x],
+    ['bottom', bounds.y + bounds.height - (work.y + work.height)],
+    ['right', bounds.x + bounds.width - (work.x + work.width)],
+  ]
+  gaps.sort((a, b) => b[1] - a[1])
+  return gaps[0][1] > 2 ? gaps[0][0] : null
+}
+
+/** When workArea has no inset (auto-hide / Linux), infer from tray/cursor location. */
+function panelEdgeFromAnchor(
+  bounds: Electron.Rectangle,
+  anchorX: number,
+  anchorY: number,
+): PanelEdge {
+  const relX = (anchorX - bounds.x) / Math.max(bounds.width, 1)
+  const relY = (anchorY - bounds.y) / Math.max(bounds.height, 1)
+  const dist: Array<[PanelEdge, number]> = [
+    ['top', relY],
+    ['bottom', 1 - relY],
+    ['left', relX],
+    ['right', 1 - relX],
+  ]
+  dist.sort((a, b) => a[1] - b[1])
+  return dist[0][0]
+}
+
+function resolveTrayAnchor(
+  preferred?: Electron.Rectangle | null,
+): Electron.Rectangle {
+  const cursor = screen.getCursorScreenPoint()
+  const candidates = [preferred, lastTrayAnchor, tray?.getBounds() ?? null]
+  for (const box of candidates) {
+    if (box && box.width > 0 && box.height > 0) {
+      lastTrayAnchor = box
+      return box
+    }
+  }
+  // Linux (and rare Win/mac glitches): getBounds is empty — fake a 1×1 at cursor.
+  const fallback = { x: cursor.x, y: cursor.y, width: 1, height: 1 }
+  lastTrayAnchor = fallback
+  return fallback
+}
 
 function windowFromEvent(event: Electron.IpcMainInvokeEvent): BrowserWindow | null {
   return BrowserWindow.fromWebContents(event.sender)
@@ -147,23 +206,82 @@ async function loadTrayPopupPage(win: BrowserWindow) {
   }
 }
 
-function positionTrayPopup(win: BrowserWindow, height: number) {
-  if (!tray) return
-  const trayBounds = tray.getBounds()
+function positionTrayPopup(
+  win: BrowserWindow,
+  height: number,
+  preferredAnchor?: Electron.Rectangle | null,
+) {
   // 300px card + horizontal padding for rounded shadow bleed.
   const width = 328
+  const gap = 8
+  const trayBox = resolveTrayAnchor(preferredAnchor)
+  const anchorX = trayBox.x + trayBox.width / 2
+  const anchorY = trayBox.y + trayBox.height / 2
   const display = screen.getDisplayNearestPoint({
-    x: trayBounds.x,
-    y: trayBounds.y,
+    x: Math.round(anchorX),
+    y: Math.round(anchorY),
   })
   const work = display.workArea
-  let x = Math.round(trayBounds.x + trayBounds.width / 2 - width / 2)
-  let y = Math.round(trayBounds.y - height - 8)
-  if (y < work.y) {
-    y = Math.round(trayBounds.y + trayBounds.height + 8)
+  const bounds = display.bounds
+
+  // Prefer where the tray icon actually is. Largest workArea inset is wrong on
+  // macOS (Dock often bigger than the menu bar while the icon sits at the top).
+  let edge = panelEdgeFromAnchor(bounds, anchorX, anchorY)
+  const workEdge = panelEdgeFromWorkArea(bounds, work)
+  if (workEdge && workEdge === edge) {
+    // Confirmed by reserved strip.
+  } else if (
+    workEdge &&
+    // Only trust workArea when the icon sits clearly inside that strip.
+    ((workEdge === 'top' && trayBox.y + trayBox.height <= work.y + 4) ||
+      (workEdge === 'bottom' &&
+        trayBox.y >= work.y + work.height - 4) ||
+      (workEdge === 'left' && trayBox.x + trayBox.width <= work.x + 4) ||
+      (workEdge === 'right' && trayBox.x >= work.x + work.width - 4))
+  ) {
+    edge = workEdge
   }
-  x = Math.min(Math.max(x, work.x + 8), work.x + work.width - width - 8)
-  y = Math.min(Math.max(y, work.y + 8), work.y + work.height - height - 8)
+
+  // macOS status items live in the menu bar even when detection is noisy.
+  if (process.platform === 'darwin') {
+    const nearTop = anchorY < bounds.y + Math.max(48, work.y - bounds.y + 24)
+    if (nearTop) edge = 'top'
+  }
+
+  // Minimum clearance under a visible macOS menu bar when workArea.y is 0.
+  const topSafe =
+    process.platform === 'darwin'
+      ? Math.max(work.y, bounds.y + 28)
+      : work.y
+
+  let x: number
+  let y: number
+  switch (edge) {
+    case 'top':
+      x = Math.round(anchorX - width / 2)
+      y = Math.round(Math.max(trayBox.y + trayBox.height, topSafe) + gap)
+      break
+    case 'bottom':
+      x = Math.round(anchorX - width / 2)
+      y = Math.round(trayBox.y - height - gap)
+      break
+    case 'left':
+      x = Math.round(trayBox.x + trayBox.width + gap)
+      y = Math.round(anchorY - height / 2)
+      break
+    case 'right':
+      x = Math.round(trayBox.x - width - gap)
+      y = Math.round(anchorY - height / 2)
+      break
+  }
+
+  const minX = work.x + gap
+  const maxX = work.x + work.width - width - gap
+  const minY = (edge === 'top' ? topSafe : work.y) + gap
+  const maxY = work.y + work.height - height - gap
+  x = clampTrayCoord(x, minX, maxX)
+  y = clampTrayCoord(y, minY, maxY)
+
   win.setBounds({ x, y, width, height })
 }
 
@@ -239,7 +357,7 @@ function refreshTrayConnectionsFromStore() {
 }
 
 /** Tray click only opens. If already open, another tray click does nothing. */
-async function openTrayPopupFromTray() {
+async function openTrayPopupFromTray(clickBounds?: Electron.Rectangle) {
   clearTrayBlurHideTimer()
   if (Date.now() < ignoreTrayClickUntil) return
   if (trayPopupShown) return
@@ -247,7 +365,7 @@ async function openTrayPopupFromTray() {
   refreshTrayConnectionsFromStore()
   const win = await ensureTrayPopup()
   broadcastTrayState()
-  positionTrayPopup(win, win.getBounds().height)
+  positionTrayPopup(win, win.getBounds().height, clickBounds)
   trayPopupShown = true
   win.show()
   win.focus()
@@ -258,11 +376,11 @@ function ensureTray() {
   const icon = resolveAppIcon()
   tray = new Tray(icon ?? nativeImage.createEmpty())
   tray.setToolTip('Custom SSH')
-  tray.on('click', () => {
-    void openTrayPopupFromTray()
+  tray.on('click', (_event, bounds) => {
+    void openTrayPopupFromTray(bounds)
   })
-  tray.on('right-click', () => {
-    void openTrayPopupFromTray()
+  tray.on('right-click', (_event, bounds) => {
+    void openTrayPopupFromTray(bounds)
   })
   tray.on('double-click', () => {
     showMainWindow()
