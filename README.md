@@ -47,7 +47,7 @@
 | 🎨 | Тёмная / светлая тема, русский и английский |
 | ⬆️ | Обновления: авто на Windows (Setup) и Linux (AppImage); на macOS — ссылка на Releases |
 
-Текущая версия в репозитории: **`4.1.2`** (актуальный номер всегда в [Releases](https://github.com/GoblinThug/Custom-SSH/releases)).
+Текущая версия в репозитории: **`4.1.3`** (актуальный номер всегда в [Releases](https://github.com/GoblinThug/Custom-SSH/releases)).
 
 ---
 
@@ -316,7 +316,7 @@ Workflow [`.github/workflows/release.yml`](.github/workflows/release.yml) соб
 | 🎨 | Dark / light theme, English & Russian |
 | ⬆️ | Updates: auto on Windows Setup and Linux AppImage; on macOS — open Releases |
 
-Repo version: **`4.1.2`** (always check [Releases](https://github.com/GoblinThug/Custom-SSH/releases) for the latest).
+Repo version: **`4.1.3`** (always check [Releases](https://github.com/GoblinThug/Custom-SSH/releases) for the latest).
 
 ---
 
