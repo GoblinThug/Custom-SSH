@@ -7,6 +7,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11'
 import '@xterm/xterm/css/xterm.css'
 import { matchBinding } from '../hotkeys'
 import { useSettings } from '../i18n/SettingsContext'
+import { formatMessage } from '../utils/formatMessage'
 import { TAB_SIZE, type AppTheme, type HotkeysSettings, type SessionStatus } from '../types'
 
 type Props = {
@@ -17,16 +18,6 @@ type Props = {
   reconnectAttempt?: number
   /** When false, skip chrome empty-state (used for inactive tabs). */
   active?: boolean
-}
-
-function formatMessage(
-  template: string,
-  values: Record<string, string | number>,
-) {
-  return Object.entries(values).reduce(
-    (text, [key, value]) => text.replaceAll(`{${key}}`, String(value)),
-    template,
-  )
 }
 
 function decodeBase64(data: string): Uint8Array {
@@ -553,7 +544,6 @@ export function TerminalView({
       searchAddonRef.current = null
     }
     // theme is applied only at create; later changes handled by separate effect
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const runSearch = (direction: 'next' | 'prev') => {

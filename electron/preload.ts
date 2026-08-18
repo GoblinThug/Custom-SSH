@@ -485,11 +485,33 @@ const api = {
       ipcRenderer.removeListener('editor:close-request', listener)
     }
   },
+  onEditorOpenTab: (callback: (payload: { remotePath: string }) => void) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      payload: { remotePath: string },
+    ) => callback(payload)
+    ipcRenderer.on('editor:open-tab', listener)
+    return () => {
+      ipcRenderer.removeListener('editor:open-tab', listener)
+    }
+  },
   onViewerCloseRequest: (callback: () => void) => {
     const listener = () => callback()
     ipcRenderer.on('viewer:close-request', listener)
     return () => {
       ipcRenderer.removeListener('viewer:close-request', listener)
+    }
+  },
+  onViewerNavigate: (
+    callback: (payload: { sessionId: string; remotePath: string }) => void,
+  ) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      payload: { sessionId: string; remotePath: string },
+    ) => callback(payload)
+    ipcRenderer.on('viewer:navigate', listener)
+    return () => {
+      ipcRenderer.removeListener('viewer:navigate', listener)
     }
   },
   onArchiveCloseRequest: (callback: () => void) => {

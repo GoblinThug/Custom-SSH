@@ -1,10 +1,24 @@
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { Readable, Writable } from 'node:stream'
 import { Client as FtpClient } from 'basic-ftp'
 import { Client, type ClientChannel, type SFTPWrapper } from 'ssh2'
 import type { BrowserWindow } from 'electron'
+import {
+  createRemoteFs,
+  isTransferPartName,
+  joinRemote,
+  localPartPath,
+  remotePartPath,
+  type RemoteFsBackend,
+} from './remote-fs'
+import {
+  isTransientTransferError,
+  PROGRESS_EMIT_MS,
+} from './remote-fs/shared'
+import {
+  isTransferCancelledError,
+} from './transfer-errors'
 import type {
   AppTheme,
   ConnectionProtocol,
@@ -14,15 +28,7 @@ import type {
   TransferProgress,
 } from './types'
 
-export class TransferCancelledError extends Error {
-  readonly fileKey: string
-
-  constructor(fileKey: string) {
-    super('Transfer cancelled')
-    this.name = 'TransferCancelledError'
-    this.fileKey = fileKey
-  }
-}
+export { TransferCancelledError, isTransferCancelledError } from './transfer-errors'
 
 export class ConnectCancelledError extends Error {
   readonly cancelled = true
@@ -40,13 +46,6 @@ export function isConnectCancelled(err: unknown): boolean {
   )
 }
 
-function isTransferCancelledError(err: unknown): boolean {
-  return (
-    err instanceof TransferCancelledError ||
-    (err instanceof Error && err.name === 'TransferCancelledError')
-  )
-}
-
 type ActiveTransfer = {
   cancelled: Set<string>
   currentKey: string | null
@@ -59,10 +58,6 @@ type ActiveTransfer = {
 const TRANSFER_CONCURRENCY = 4
 /** Parallel directory walks while building transfer job lists. */
 const COLLECT_CONCURRENCY = 8
-/** Throttle progress IPC to avoid main↔renderer overhead. */
-const PROGRESS_EMIT_MS = 150
-/** Larger read/write chunks for high-latency links. */
-const STREAM_HIGH_WATER_MARK = 256 * 1024
 
 async function mapPool<T, R>(
   items: T[],
@@ -209,64 +204,6 @@ function hasPrompt(text: string): boolean {
     /[$#%] $/.test(text) ||
     /[❯›➜] $/.test(text) ||
     isPowerShellBanner(text)
-  )
-}
-
-function joinRemote(...parts: string[]): string {
-  const cleaned = parts
-    .join('/')
-    .replace(/\/+/g, '/')
-    .replace(/\/$/, '')
-  return cleaned.length === 0 ? '/' : cleaned
-}
-
-/** Incomplete transfer marker — never written as the final path. */
-const TRANSFER_PART_SUFFIX = '.customssh.part'
-
-function isTransferPartName(name: string): boolean {
-  return name.endsWith(TRANSFER_PART_SUFFIX)
-}
-
-function localPartPath(localPath: string): string {
-  return `${localPath}${TRANSFER_PART_SUFFIX}`
-}
-
-function remotePartPath(remotePath: string): string {
-  return `${remotePath}${TRANSFER_PART_SUFFIX}`
-}
-
-function mimeTypeForImagePath(remotePath: string): string {
-  const lower = remotePath.toLowerCase()
-  if (lower.endsWith('.png')) return 'image/png'
-  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg'
-  if (lower.endsWith('.webp')) return 'image/webp'
-  if (lower.endsWith('.svg')) return 'image/svg+xml'
-  if (lower.endsWith('.gif')) return 'image/gif'
-  return 'application/octet-stream'
-}
-
-function isTransientTransferError(err: unknown): boolean {
-  if (!err) return false
-  const code =
-    typeof err === 'object' && err && 'code' in err
-      ? String((err as { code?: string | number }).code)
-      : ''
-  const message = err instanceof Error ? err.message : String(err)
-  if (
-    [
-      'ECONNRESET',
-      'EPIPE',
-      'ENOTCONN',
-      'ECONNABORTED',
-      'ERR_STREAM_DESTROYED',
-      'ERR_SOCKET_CLOSED',
-    ].includes(code)
-  ) {
-    return true
-  }
-  if (code === '4' || code === '7') return true
-  return /session not found|not connected|connection (lost|closed|reset)|socket|ECONNRESET|EPIPE|ENOTCONN|EOF|Failed to open SFTP|No response|closed|incomplete (download|upload)|will resume/i.test(
-    message,
   )
 }
 
@@ -1001,16 +938,12 @@ export class SshManager {
   async ping(sessionId: string): Promise<number> {
     const session = this.sessions.get(sessionId)
     if (!session) throw new Error('Session not found')
+    if (session.closed) throw new Error('Connection lost')
 
     const started = Date.now()
 
-    if (session.protocol === 'ftp') {
-      await this.getFtp(session)
-      return Math.max(1, Date.now() - started)
-    }
-
-    if (session.protocol === 'sftp') {
-      return this.sftpPing(session, started)
+    if (session.protocol === 'ftp' || session.protocol === 'sftp') {
+      return this.remoteFs(sessionId, session).ping(started)
     }
 
     return new Promise((resolve, reject) => {
@@ -1023,7 +956,13 @@ export class SshManager {
           clearTimeout(timeout)
           const message = err instanceof Error ? err.message : String(err ?? '')
           if (/unable to exec/i.test(message)) {
-            void this.sftpPing(session, started).then(resolve, reject)
+            if (session.closed) {
+              reject(new Error('Connection lost'))
+              return
+            }
+            void this.remoteFs(sessionId, session)
+              .ping(started)
+              .then(resolve, reject)
             return
           }
           reject(err ?? new Error('Ping failed'))
@@ -1051,13 +990,8 @@ export class SshManager {
     const session = this.sessions.get(sessionId)
     if (!session) throw new Error('Session not found')
     if (session.cwd) return session.cwd
-    if (session.protocol === 'ftp') {
-      const ftp = await this.getFtp(session)
-      session.cwd = await ftp.pwd().catch(() => '/')
-      return session.cwd
-    }
-    if (session.protocol === 'sftp') {
-      session.cwd = await this.sftpGetCwd(session)
+    if (session.protocol === 'ftp' || session.protocol === 'sftp') {
+      session.cwd = await this.remoteFs(sessionId, session).getCwd()
       return session.cwd
     }
 
@@ -1066,64 +1000,8 @@ export class SshManager {
   }
 
   async listDir(sessionId: string, remotePath: string): Promise<RemoteFsEntry[]> {
-    const session = this.sessions.get(sessionId)
-    if (!session) throw new Error('Session not found')
-
-    if (session.protocol === 'ftp') {
-      const ftp = await this.getFtp(session)
-      const target = remotePath || '/'
-      const list = await ftp.list(target)
-      return list
-        .filter(
-          (item) =>
-            item.name !== '.' &&
-            item.name !== '..' &&
-            !isTransferPartName(item.name),
-        )
-        .map((item) => ({
-          name: item.name,
-          path: joinRemote(target, item.name),
-          isDir: item.isDirectory,
-          size: item.isDirectory ? undefined : item.size,
-        }))
-        .sort((a, b) => {
-          if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
-          return a.name.localeCompare(b.name)
-        })
-    }
-
-    const target = remotePath || '/'
-    return this.withSftp(session, (sftp) =>
-      new Promise((resolve, reject) => {
-        sftp.readdir(target, (err, list) => {
-          if (err) {
-            reject(err)
-            return
-          }
-          const entries = list
-            .filter(
-              (item) =>
-                item.filename !== '.' &&
-                item.filename !== '..' &&
-                !isTransferPartName(item.filename),
-            )
-            .map((item) => {
-              const isDir = (item.attrs.mode & 0o170000) === 0o040000
-              return {
-                name: item.filename,
-                path: joinRemote(target, item.filename),
-                isDir,
-                size: isDir ? undefined : item.attrs.size,
-              } satisfies RemoteFsEntry
-            })
-            .sort((a, b) => {
-              if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
-              return a.name.localeCompare(b.name)
-            })
-          resolve(entries)
-        })
-      }),
-    )
+    const session = this.requireSession(sessionId)
+    return this.remoteFs(sessionId, session).listDir(remotePath)
   }
 
   async readFile(
@@ -1131,65 +1009,8 @@ export class SshManager {
     remotePath: string,
     maxBytes = 5 * 1024 * 1024,
   ): Promise<{ content: string; size: number }> {
-    const session = this.sessions.get(sessionId)
-    if (!session) throw new Error('Session not found')
-
-    if (session.protocol === 'ftp') {
-      const ftp = await this.getFtp(session)
-      const bufParts: Buffer[] = []
-      const writable = new Writable({
-        write: (chunk, _enc, cb) => {
-          bufParts.push(Buffer.from(chunk))
-          cb()
-        },
-      })
-
-      await ftp.downloadTo(writable, remotePath)
-      const buf = Buffer.concat(bufParts)
-      if (buf.length > maxBytes) {
-        throw new Error(
-          `File is too large to edit (${Math.ceil(buf.length / 1024 / 1024)} MB)`,
-        )
-      }
-      if (buf.includes(0)) throw new Error('Binary files cannot be edited')
-      return { content: buf.toString('utf8'), size: buf.length }
-    }
-
-    const sftp = await this.getSftp(session)
-
-    return new Promise((resolve, reject) => {
-      sftp.stat(remotePath, (statErr, stats) => {
-        if (statErr) {
-          reject(statErr)
-          return
-        }
-        if ((stats.mode & 0o170000) === 0o040000) {
-          reject(new Error('Path is a directory'))
-          return
-        }
-        if (stats.size > maxBytes) {
-          reject(
-            new Error(
-              `File is too large to edit (${Math.ceil(stats.size / 1024 / 1024)} MB)`,
-            ),
-          )
-          return
-        }
-
-        sftp.readFile(remotePath, (err, data) => {
-          if (err) {
-            reject(err)
-            return
-          }
-          const buf = Buffer.isBuffer(data) ? data : Buffer.from(data)
-          if (buf.includes(0)) {
-            reject(new Error('Binary files cannot be edited'))
-            return
-          }
-          resolve({ content: buf.toString('utf8'), size: buf.length })
-        })
-      })
-    })
+    const session = this.requireSession(sessionId)
+    return this.remoteFs(sessionId, session).readFile(remotePath, maxBytes)
   }
 
   async remoteFileSize(sessionId: string, remotePath: string): Promise<number> {
@@ -1203,63 +1024,8 @@ export class SshManager {
     remotePath: string,
     maxBytes = 25 * 1024 * 1024,
   ): Promise<{ base64: string; size: number; mimeType: string }> {
-    const session = this.sessions.get(sessionId)
-    if (!session) throw new Error('Session not found')
-
-    const mimeType = mimeTypeForImagePath(remotePath)
-
-    if (session.protocol === 'ftp') {
-      const ftp = await this.getFtp(session)
-      const bufParts: Buffer[] = []
-      const writable = new Writable({
-        write: (chunk, _enc, cb) => {
-          bufParts.push(Buffer.from(chunk))
-          cb()
-        },
-      })
-      await ftp.downloadTo(writable, remotePath)
-      const buf = Buffer.concat(bufParts)
-      if (buf.length > maxBytes) {
-        throw new Error(
-          `File is too large to preview (${Math.ceil(buf.length / 1024 / 1024)} MB)`,
-        )
-      }
-      return { base64: buf.toString('base64'), size: buf.length, mimeType }
-    }
-
-    const sftp = await this.getSftp(session)
-    return new Promise((resolve, reject) => {
-      sftp.stat(remotePath, (statErr, stats) => {
-        if (statErr) {
-          reject(statErr)
-          return
-        }
-        if ((stats.mode & 0o170000) === 0o040000) {
-          reject(new Error('Path is a directory'))
-          return
-        }
-        if (stats.size > maxBytes) {
-          reject(
-            new Error(
-              `File is too large to preview (${Math.ceil(stats.size / 1024 / 1024)} MB)`,
-            ),
-          )
-          return
-        }
-        sftp.readFile(remotePath, (err, data) => {
-          if (err) {
-            reject(err)
-            return
-          }
-          const buf = Buffer.isBuffer(data) ? data : Buffer.from(data)
-          resolve({
-            base64: buf.toString('base64'),
-            size: buf.length,
-            mimeType,
-          })
-        })
-      })
-    })
+    const session = this.requireSession(sessionId)
+    return this.remoteFs(sessionId, session).readBinaryFile(remotePath, maxBytes)
   }
 
   async writeFile(
@@ -1267,32 +1033,8 @@ export class SshManager {
     remotePath: string,
     content: string,
   ): Promise<void> {
-    const session = this.sessions.get(sessionId)
-    if (!session) throw new Error('Session not found')
-
-    if (session.protocol === 'ftp') {
-      const ftp = await this.getFtp(session)
-      // Ensure parent directories exist.
-      const parent =
-        remotePath.includes('/')
-          ? remotePath.slice(0, remotePath.lastIndexOf('/')) || '/'
-          : '/'
-      if (parent && parent !== '/') {
-        await ftp.ensureDir(parent)
-      }
-      const stream = Readable.from([content])
-      await ftp.uploadFrom(stream, remotePath)
-      return
-    }
-
-    const sftp = await this.getSftp(session)
-
-    return new Promise((resolve, reject) => {
-      sftp.writeFile(remotePath, Buffer.from(content, 'utf8'), (err) => {
-        if (err) reject(err)
-        else resolve()
-      })
-    })
+    const session = this.requireSession(sessionId)
+    return this.remoteFs(sessionId, session).writeFile(remotePath, content)
   }
 
   async downloadFile(
@@ -1307,192 +1049,13 @@ export class SshManager {
       clearAbort: () => void
     },
   ): Promise<void> {
-    const throwIfCancelled = () => {
-      if (control?.isCancelled()) {
-        throw new TransferCancelledError(control.key)
-      }
-    }
-
-    const session = this.sessions.get(sessionId)
-    if (!session) throw new Error('Session not found')
-
-    if (session.protocol === 'ftp') {
-      await new Promise<void>(async (resolve, reject) => {
-        let cancelled = false
-        let ftp: FtpClient | null = null
-
-        const cleanup = () => {
-          try {
-            ftp?.trackProgress()
-          } catch {
-            // ignore
-          }
-        }
-
-        try {
-          ftp = await this.getFtp(session)
-
-          const total = await ftp
-            .size(remotePath)
-            .catch(() => 0 /* dir or unknown size */)
-
-          let transferred = 0
-          ftp.trackProgress((info) => {
-            if (control?.isCancelled()) {
-              cancelled = true
-              try {
-                ftp?.close()
-              } catch {
-                // ignore
-              }
-              session.ftp = null
-              return
-            }
-            // `info.bytes` is the bytes transferred in the current transfer.
-            transferred = info.bytes
-            onBytes?.(transferred, total || 0)
-          })
-
-          control?.registerAbort(() => {
-            cancelled = true
-            try {
-              ftp?.close()
-            } catch {
-              // ignore
-            }
-            session.ftp = null
-          })
-
-          throwIfCancelled()
-          const parent = path.dirname(localPath)
-          if (!fs.existsSync(parent)) fs.mkdirSync(parent, { recursive: true })
-          await ftp.downloadTo(localPath, remotePath)
-          control?.clearAbort()
-          cleanup()
-          if (cancelled) {
-            reject(new TransferCancelledError(control?.key ?? 'download'))
-            return
-          }
-          onBytes?.(total || transferred, total || transferred)
-          resolve()
-        } catch (err) {
-          try {
-            control?.clearAbort()
-          } catch {
-            // ignore
-          }
-          cleanup()
-          if (control?.isCancelled() || cancelled) {
-            reject(new TransferCancelledError(control?.key ?? 'download'))
-            return
-          }
-          reject(err instanceof Error ? err : new Error(String(err)))
-        }
-      })
-      return
-    }
-
-    await this.withTransferRetry(sessionId, async () => {
-      throwIfCancelled()
-      const session = this.requireSession(sessionId)
-      const sftp = await this.getSftp(session)
-      const remoteStats = await this.statPath(sftp, remotePath)
-      const total = remoteStats.size
-      const partPath = localPartPath(localPath)
-      const parent = path.dirname(localPath)
-      if (!fs.existsSync(parent)) fs.mkdirSync(parent, { recursive: true })
-
-      let offset = 0
-      if (fs.existsSync(partPath)) {
-        offset = fs.statSync(partPath).size
-        if (total > 0 && offset > total) {
-          fs.unlinkSync(partPath)
-          offset = 0
-        }
-      }
-
-      throwIfCancelled()
-
-      if (total === 0) {
-        fs.writeFileSync(partPath, Buffer.alloc(0))
-        this.finalizeLocalPart(partPath, localPath)
-        onBytes?.(1, 1)
-        return
-      }
-
-      if (offset === total) {
-        this.finalizeLocalPart(partPath, localPath)
-        onBytes?.(total, total)
-        return
-      }
-
-      await new Promise<void>((resolve, reject) => {
-        let settled = false
-        let transferred = offset
-        const readStream = sftp.createReadStream(remotePath, {
-          start: offset,
-          end: total > 0 ? total - 1 : 0,
-          highWaterMark: STREAM_HIGH_WATER_MARK,
-        })
-        const writeStream = fs.createWriteStream(partPath, {
-          flags: offset > 0 ? 'a' : 'w',
-          highWaterMark: STREAM_HIGH_WATER_MARK,
-        })
-
-        const fail = (err: unknown) => {
-          if (settled) return
-          settled = true
-          control?.clearAbort()
-          readStream.destroy()
-          writeStream.destroy()
-          reject(err instanceof Error ? err : new Error(String(err)))
-        }
-
-        control?.registerAbort(() => {
-          fail(new TransferCancelledError(control.key))
-        })
-
-        readStream.on('data', (chunk: Buffer | string) => {
-          if (control?.isCancelled()) {
-            fail(new TransferCancelledError(control.key))
-            return
-          }
-          const size = Buffer.isBuffer(chunk)
-            ? chunk.length
-            : Buffer.byteLength(chunk)
-          transferred += size
-          onBytes?.(transferred, total)
-        })
-        readStream.on('error', (err: Error) => fail(err))
-        writeStream.on('error', (err: Error) => fail(err))
-        writeStream.on('close', () => {
-          if (settled) return
-          settled = true
-          control?.clearAbort()
-          try {
-            if (control?.isCancelled()) {
-              reject(new TransferCancelledError(control.key))
-              return
-            }
-            const size = fs.existsSync(partPath) ? fs.statSync(partPath).size : 0
-            if (size !== total) {
-              reject(
-                new Error(
-                  `Incomplete download (${size}/${total} bytes) — will resume`,
-                ),
-              )
-              return
-            }
-            this.finalizeLocalPart(partPath, localPath)
-            onBytes?.(total, total)
-            resolve()
-          } catch (err) {
-            reject(err instanceof Error ? err : new Error(String(err)))
-          }
-        })
-        readStream.pipe(writeStream)
-      })
-    })
+    const session = this.requireSession(sessionId)
+    return this.remoteFs(sessionId, session).downloadFile(
+      remotePath,
+      localPath,
+      onBytes,
+      control,
+    )
   }
 
   async isDirectory(sessionId: string, remotePath: string): Promise<boolean> {
@@ -1766,225 +1329,18 @@ export class SshManager {
       clearAbort: () => void
     },
   ): Promise<void> {
-    const throwIfCancelled = () => {
-      if (control?.isCancelled()) {
-        throw new TransferCancelledError(control.key)
-      }
-    }
-
-    const session = this.sessions.get(sessionId)
-    if (!session) throw new Error('Session not found')
-    if (session.protocol === 'ftp') {
-      await new Promise<void>(async (resolve, reject) => {
-        let cancelled = false
-        let ftp: FtpClient | null = null
-
-        const cleanup = () => {
-          try {
-            ftp?.trackProgress()
-          } catch {
-            // ignore
-          }
-        }
-
-        try {
-          throwIfCancelled()
-          ftp = await this.getFtp(session)
-
-          const total = fs.statSync(localPath).size
-          const parent =
-            remotePath.includes('/')
-              ? remotePath.slice(0, remotePath.lastIndexOf('/')) || '/'
-              : '/'
-
-          if (parent && parent !== '/') {
-            await ftp.ensureDir(parent)
-          }
-
-          let transferred = 0
-          ftp.trackProgress((info) => {
-            if (control?.isCancelled()) {
-              cancelled = true
-              try {
-                ftp?.close()
-              } catch {
-                // ignore
-              }
-              session.ftp = null
-              return
-            }
-            if (info.type !== 'upload') return
-            transferred = info.bytes
-            onBytes?.(transferred, total || transferred)
-          })
-
-          control?.registerAbort(() => {
-            cancelled = true
-            try {
-              ftp?.close()
-            } catch {
-              // ignore
-            }
-            session.ftp = null
-          })
-
-          await ftp.uploadFrom(localPath, remotePath)
-          control?.clearAbort()
-          cleanup()
-
-          if (cancelled || control?.isCancelled()) {
-            reject(new TransferCancelledError(control?.key ?? 'upload'))
-            return
-          }
-
-          onBytes?.(total, total)
-          resolve()
-        } catch (err) {
-          cleanup()
-          if (cancelled || control?.isCancelled()) {
-            reject(new TransferCancelledError(control?.key ?? 'upload'))
-            return
-          }
-          reject(err instanceof Error ? err : new Error(String(err)))
-        }
-      })
-      return
-    }
-
-    await this.withTransferRetry(sessionId, async () => {
-      throwIfCancelled()
-      const session = this.requireSession(sessionId)
-      const sftp = await this.getSftp(session)
-      const total = fs.statSync(localPath).size
-      const partRemote = remotePartPath(remotePath)
-      const parent = remotePath.includes('/')
-        ? remotePath.slice(0, remotePath.lastIndexOf('/')) || '/'
-        : '/'
-      if (parent && parent !== '/') {
-        await this.mkdirp(sftp, parent)
-      }
-
-      let offset = 0
-      try {
-        const partStats = await this.statPath(sftp, partRemote)
-        offset = partStats.size
-        if (total > 0 && offset > total) {
-          await this.sftpUnlink(sftp, partRemote)
-          offset = 0
-        }
-      } catch {
-        offset = 0
-      }
-
-      throwIfCancelled()
-
-      if (total === 0) {
-        await this.sftpWriteEmpty(sftp, partRemote)
-        await this.finalizeRemotePart(sftp, partRemote, remotePath)
-        onBytes?.(1, 1)
-        return
-      }
-
-      if (offset === total) {
-        await this.finalizeRemotePart(sftp, partRemote, remotePath)
-        onBytes?.(total, total)
-        return
-      }
-
-      await new Promise<void>((resolve, reject) => {
-        let settled = false
-        let transferred = offset
-        const readStream = fs.createReadStream(localPath, {
-          start: offset,
-          highWaterMark: STREAM_HIGH_WATER_MARK,
-        })
-        const writeStream = sftp.createWriteStream(
-          partRemote,
-          offset > 0
-            ? {
-                flags: 'r+',
-                start: offset,
-                autoClose: true,
-                highWaterMark: STREAM_HIGH_WATER_MARK,
-              }
-            : {
-                flags: 'w',
-                autoClose: true,
-                highWaterMark: STREAM_HIGH_WATER_MARK,
-              },
-        )
-
-        const fail = (err: unknown) => {
-          if (settled) return
-          settled = true
-          control?.clearAbort()
-          readStream.destroy()
-          writeStream.destroy()
-          reject(err instanceof Error ? err : new Error(String(err)))
-        }
-
-        control?.registerAbort(() => {
-          fail(new TransferCancelledError(control.key))
-        })
-
-        readStream.on('data', (chunk: Buffer | string) => {
-          if (control?.isCancelled()) {
-            fail(new TransferCancelledError(control.key))
-            return
-          }
-          const size = Buffer.isBuffer(chunk)
-            ? chunk.length
-            : Buffer.byteLength(chunk)
-          transferred += size
-          onBytes?.(transferred, total)
-        })
-        readStream.on('error', (err: Error) => fail(err))
-        writeStream.on('error', (err: Error) => fail(err))
-        writeStream.on('close', () => {
-          if (settled) return
-          settled = true
-          control?.clearAbort()
-          void (async () => {
-            try {
-              if (control?.isCancelled()) {
-                reject(new TransferCancelledError(control.key))
-                return
-              }
-              const partStats = await this.statPath(sftp, partRemote)
-              if (partStats.size !== total) {
-                reject(
-                  new Error(
-                    `Incomplete upload (${partStats.size}/${total} bytes) — will resume`,
-                  ),
-                )
-                return
-              }
-              await this.finalizeRemotePart(sftp, partRemote, remotePath)
-              onBytes?.(total, total)
-              resolve()
-            } catch (err) {
-              reject(err instanceof Error ? err : new Error(String(err)))
-            }
-          })()
-        })
-        readStream.pipe(writeStream)
-      })
-    })
+    const session = this.requireSession(sessionId)
+    return this.remoteFs(sessionId, session).uploadFile(
+      localPath,
+      remotePath,
+      onBytes,
+      control,
+    )
   }
 
-  async mkdir(
-    sessionId: string,
-    remotePath: string,
-  ): Promise<void> {
-    const session = this.sessions.get(sessionId)
-    if (!session) throw new Error('Session not found')
-    if (session.protocol === 'ftp') {
-      const ftp = await this.getFtp(session)
-      await ftp.ensureDir(remotePath)
-    } else {
-      const sftp = await this.getSftp(session)
-      await this.mkdirp(sftp, remotePath)
-    }
+  async mkdir(sessionId: string, remotePath: string): Promise<void> {
+    const session = this.requireSession(sessionId)
+    return this.remoteFs(sessionId, session).mkdir(remotePath)
   }
 
   async rename(
@@ -1992,41 +1348,13 @@ export class SshManager {
     fromPath: string,
     toPath: string,
   ): Promise<void> {
-    const session = this.sessions.get(sessionId)
-    if (!session) throw new Error('Session not found')
-
-    if (session.protocol === 'ftp') {
-      const ftp = await this.getFtp(session)
-      await ftp.rename(fromPath, toPath)
-      return
-    }
-
-    const sftp = await this.getSftp(session)
-    return new Promise((resolve, reject) => {
-      sftp.rename(fromPath, toPath, (err) => {
-        if (err) reject(err)
-        else resolve()
-      })
-    })
+    const session = this.requireSession(sessionId)
+    return this.remoteFs(sessionId, session).rename(fromPath, toPath)
   }
 
   async removeRemote(sessionId: string, remotePath: string): Promise<number> {
-    const session = this.sessions.get(sessionId)
-    if (!session) throw new Error('Session not found')
-    if (session.protocol === 'ftp') {
-      const ftp = await this.getFtp(session)
-      const stats = await this.statRemote(sessionId, remotePath)
-      const isDir = (stats.mode & 0o170000) === 0o040000
-      if (isDir) {
-        await ftp.removeDir(remotePath)
-        return 1
-      }
-      await ftp.remove(remotePath)
-      return 1
-    }
-
-    const sftp = await this.getSftp(session)
-    return this.removeRecursive(sessionId, sftp, remotePath)
+    const session = this.requireSession(sessionId)
+    return this.remoteFs(sessionId, session).remove(remotePath)
   }
 
   /** Upload local files/folders into remoteDir. */
@@ -2078,15 +1406,8 @@ export class SshManager {
       ]
     }
 
-    const session = this.sessions.get(sessionId)
-    if (!session) throw new Error('Session not found')
-    if (session.protocol === 'ftp') {
-      const ftp = await this.getFtp(session)
-      await ftp.ensureDir(remotePath)
-    } else {
-      const sftp = await this.getSftp(session)
-      await this.mkdirp(sftp, remotePath)
-    }
+    const session = this.requireSession(sessionId)
+    await this.remoteFs(sessionId, session).ensureDir(remotePath)
 
     const names = fs.readdirSync(localPath).filter(
       (name) => !isTransferPartName(name),
@@ -2101,121 +1422,21 @@ export class SshManager {
     return nested.flat()
   }
 
-  private async mkdirp(sftp: SFTPWrapper, remotePath: string): Promise<void> {
-    const normalized =
-      remotePath === '/'
-        ? '/'
-        : remotePath.replace(/\/+$/, '') || '/'
-    if (normalized === '/') return
-
-    const parts = normalized.split('/').filter(Boolean)
-    let current = ''
-    for (const part of parts) {
-      current += `/${part}`
-      try {
-        const stats = await this.statPath(sftp, current)
-        if ((stats.mode & 0o170000) !== 0o040000) {
-          throw new Error(`Not a directory: ${current}`)
-        }
-      } catch {
-        await new Promise<void>((resolve, reject) => {
-          sftp.mkdir(current, (err) => {
-            if (!err) {
-              resolve()
-              return
-            }
-            // Ignore races where the directory appeared between stat and mkdir.
-            sftp.stat(current, (statErr, stats) => {
-              if (
-                !statErr &&
-                stats &&
-                (stats.mode & 0o170000) === 0o040000
-              ) {
-                resolve()
-                return
-              }
-              reject(err)
-            })
-          })
-        })
-      }
-    }
-  }
-
-  private async removeRecursive(
-    sessionId: string,
-    sftp: SFTPWrapper,
-    remotePath: string,
-  ): Promise<number> {
-    const stats = await this.statPath(sftp, remotePath)
-    const isDir = (stats.mode & 0o170000) === 0o040000
-    if (!isDir) {
-      await new Promise<void>((resolve, reject) => {
-        sftp.unlink(remotePath, (err) => {
-          if (err) reject(err)
-          else resolve()
-        })
-      })
-      return 1
-    }
-
-    const entries = await this.listDir(sessionId, remotePath)
-    let removed = 0
-    for (const entry of entries) {
-      removed += await this.removeRecursive(sessionId, sftp, entry.path)
-    }
-    await new Promise<void>((resolve, reject) => {
-      sftp.rmdir(remotePath, (err) => {
-        if (err) reject(err)
-        else resolve()
-      })
-    })
-    return removed
-  }
-
   private async statRemote(
     sessionId: string,
     remotePath: string,
   ): Promise<{ mode: number; size: number }> {
-    const session = this.sessions.get(sessionId)
-    if (!session || session.closed) throw new Error('Session not found')
-
-    if (session.protocol !== 'ftp') {
-      const sftp = await this.getSftp(session)
-      return this.statPath(sftp, remotePath)
-    }
-
-    const ftp = await this.getFtp(session)
-    if (!remotePath || remotePath === '/') {
-      return { mode: 0o040000, size: 0 }
-    }
-
-    const name = remotePath.split('/').filter(Boolean).at(-1) ?? remotePath
-    const parent =
-      remotePath.includes('/')
-        ? remotePath.slice(0, remotePath.lastIndexOf('/')) || '/'
-        : '/'
-
-    const list = await ftp.list(parent)
-    const match = list.find((item) => item.name === name)
-    if (!match) throw new Error('Failed to stat path')
-
-    if (match.isDirectory) return { mode: 0o040000, size: 0 }
-    return { mode: 0o100000, size: match.size ?? 0 }
+    const session = this.requireSession(sessionId)
+    return this.remoteFs(sessionId, session).stat(remotePath)
   }
 
-  private statPath(
-    sftp: SFTPWrapper,
-    remotePath: string,
-  ): Promise<{ mode: number; size: number }> {
-    return new Promise((resolve, reject) => {
-      sftp.stat(remotePath, (err, stats) => {
-        if (err || !stats) {
-          reject(err ?? new Error('Failed to stat path'))
-          return
-        }
-        resolve({ mode: stats.mode, size: stats.size })
-      })
+  private remoteFs(sessionId: string, session: Session): RemoteFsBackend {
+    return createRemoteFs(session, {
+      sessionId,
+      getFtp: () => this.getFtp(session),
+      withSftp: (fn) => this.withSftp(session, fn),
+      getSftp: () => this.getSftp(session),
+      withTransferRetry: (fn) => this.withTransferRetry(sessionId, fn),
     })
   }
 
@@ -2272,16 +1493,6 @@ export class SshManager {
     throw new Error('Session did not recover in time to resume transfer')
   }
 
-  private finalizeLocalPart(partPath: string, localPath: string) {
-    if (!fs.existsSync(partPath)) {
-      throw new Error('Missing partial download file')
-    }
-    if (fs.existsSync(localPath)) {
-      fs.unlinkSync(localPath)
-    }
-    fs.renameSync(partPath, localPath)
-  }
-
   private cleanupLocalPart(localPath: string) {
     const partPath = localPartPath(localPath)
     try {
@@ -2294,88 +1505,35 @@ export class SshManager {
   private async cleanupRemotePart(sessionId: string, remotePath: string) {
     try {
       const session = this.sessions.get(sessionId)
-      if (!session || session.closed) return
+      if (!session || session.closed || session.protocol === 'ftp') return
       const sftp = await this.getSftp(session)
-      await this.sftpUnlink(sftp, remotePartPath(remotePath))
+      const part = remotePartPath(remotePath)
+      await new Promise<void>((resolve, reject) => {
+        sftp.unlink(part, (err) => {
+          if (!err) {
+            resolve()
+            return
+          }
+          const code =
+            err && typeof err === 'object' && 'code' in err
+              ? Number((err as { code?: number }).code)
+              : NaN
+          if (code === 2 || /no such file/i.test(err.message)) {
+            resolve()
+            return
+          }
+          reject(err)
+        })
+      })
     } catch {
       // best-effort — session may be gone
     }
-  }
-
-  private async finalizeRemotePart(
-    sftp: SFTPWrapper,
-    partRemote: string,
-    remotePath: string,
-  ): Promise<void> {
-    await this.sftpUnlink(sftp, remotePath)
-    await new Promise<void>((resolve, reject) => {
-      sftp.rename(partRemote, remotePath, (err) => {
-        if (err) reject(err)
-        else resolve()
-      })
-    })
-  }
-
-  private sftpUnlink(sftp: SFTPWrapper, remotePath: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      sftp.unlink(remotePath, (err) => {
-        if (!err) {
-          resolve()
-          return
-        }
-        const code =
-          err && typeof err === 'object' && 'code' in err
-            ? Number((err as { code?: number }).code)
-            : NaN
-        // SSH_FX_NO_SUCH_FILE
-        if (code === 2 || /no such file/i.test(err.message)) {
-          resolve()
-          return
-        }
-        reject(err)
-      })
-    })
-  }
-
-  private sftpWriteEmpty(sftp: SFTPWrapper, remotePath: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      sftp.writeFile(remotePath, Buffer.alloc(0), (err) => {
-        if (err) reject(err)
-        else resolve()
-      })
-    })
   }
 
   private isSftpStaleError(err: unknown): boolean {
     const message = err instanceof Error ? err.message : String(err ?? '')
     return /no response from server|sftp.*closed|failed to open sftp/i.test(
       message,
-    )
-  }
-
-  private sftpPing(session: Session, started: number): Promise<number> {
-    return this.withSftp(session, (sftp) =>
-      new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          reject(new Error('Ping timeout'))
-        }, 8000)
-        sftp.realpath('.', (err) => {
-          clearTimeout(timeout)
-          if (err) reject(err)
-          else resolve(Math.max(1, Date.now() - started))
-        })
-      }),
-    )
-  }
-
-  private sftpGetCwd(session: Session): Promise<string> {
-    return this.withSftp(session, (sftp) =>
-      new Promise((resolve, reject) => {
-        sftp.realpath('.', (err, absPath) => {
-          if (err) reject(err)
-          else resolve(absPath || '/')
-        })
-      }),
     )
   }
 
@@ -2395,6 +1553,9 @@ export class SshManager {
   }
 
   private getSftp(session: Session): Promise<SFTPWrapper> {
+    if (session.closed) {
+      return Promise.reject(new Error('Connection lost'))
+    }
     if (session.sftp) return Promise.resolve(session.sftp)
     return new Promise((resolve, reject) => {
       session.client.sftp((err, sftp) => {

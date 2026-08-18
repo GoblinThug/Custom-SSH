@@ -17,7 +17,7 @@ import {
   type HotkeyId,
   type KeyBinding,
 } from '../types'
-import { translate, type MessageKey } from './messages'
+import { ensureLocale, translate, type MessageKey } from './messages'
 
 type SettingsContextValue = {
   settings: AppSettings
@@ -42,14 +42,27 @@ function applyTheme(theme: AppTheme) {
 export function SettingsProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings)
   const [ready, setReady] = useState(false)
+  const [localeReady, setLocaleReady] = useState(false)
 
   useEffect(() => {
-    void window.sshApi.loadSettings().then((loaded) => {
+    void window.sshApi.loadSettings().then(async (loaded) => {
+      await ensureLocale(loaded.locale)
       setSettings(loaded)
       applyTheme(loaded.theme)
+      setLocaleReady(true)
       setReady(true)
     })
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    void ensureLocale(settings.locale).then(() => {
+      if (!cancelled) setLocaleReady(true)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [settings.locale])
 
   useEffect(() => {
     applyTheme(settings.theme)
@@ -57,9 +70,12 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
 
   const persist = useCallback(async (patch: Partial<AppSettings>) => {
     const next = await window.sshApi.saveSettings(patch)
+    if (next.locale !== settings.locale) {
+      await ensureLocale(next.locale)
+    }
     setSettings(next)
     return next
-  }, [])
+  }, [settings.locale])
 
   const setLocale = useCallback(
     (locale: AppLocale) => {
@@ -109,7 +125,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
 
   const t = useCallback(
     (key: MessageKey) => translate(settings.locale, key),
-    [settings.locale],
+    [settings.locale, localeReady],
   )
 
   const value = useMemo(

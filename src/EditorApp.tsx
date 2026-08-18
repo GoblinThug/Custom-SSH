@@ -1,11 +1,9 @@
-import CodeMirror from '@uiw/react-codemirror'
 import { indentWithTab } from '@codemirror/commands'
 import { indentUnit } from '@codemirror/language'
 import { search } from '@codemirror/search'
-import { EditorState } from '@codemirror/state'
+import { EditorState, type Extension } from '@codemirror/state'
 import { keymap } from '@codemirror/view'
-import { oneDark } from '@codemirror/theme-one-dark'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react'
 import { TitleBar } from './components/TitleBar'
 import { languageExtensionForPath } from './editorLanguage'
 import { createEditorSearchPanel } from './editorSearchPanel'
@@ -15,15 +13,38 @@ import {
   wantsColorHighlight,
 } from './editorSyntaxColors'
 import { ProgressBar } from './components/ProgressBar'
+import { EditorSkeleton } from './components/skeleton/EditorSkeleton'
 import { useSettings } from './i18n/SettingsContext'
 import { formatAppError } from './utils/formatAppError'
+import { readWindowQuery } from './utils/windowQuery'
 import { TAB_SIZE } from './types'
 
-function readQuery() {
-  const params = new URLSearchParams(window.location.search)
+const EditorCodeMirror = lazy(() =>
+  import('./components/EditorCodeMirror').then((mod) => ({
+    default: mod.EditorCodeMirror,
+  })),
+)
+
+type EditorTab = {
+  id: string
+  remotePath: string
+  content: string
+  original: string
+  loading: boolean
+  error?: string
+}
+
+function fileNameOf(remotePath: string) {
+  return remotePath.split('/').filter(Boolean).pop() || remotePath
+}
+
+function createTab(remotePath: string): EditorTab {
   return {
-    sessionId: params.get('sessionId') ?? '',
-    remotePath: params.get('path') ?? '',
+    id: crypto.randomUUID(),
+    remotePath,
+    content: '',
+    original: '',
+    loading: true,
   }
 }
 
@@ -53,20 +74,126 @@ function UnsavedIcon() {
 
 export function EditorApp() {
   const { t, theme } = useSettings()
-  const { sessionId, remotePath } = useMemo(() => readQuery(), [])
-  const [content, setContent] = useState('')
-  const [original, setOriginal] = useState('')
-  const [loading, setLoading] = useState(true)
+  const { sessionId, remotePath: initialPath } = useMemo(() => readWindowQuery(), [])
+  const [langExt, setLangExt] = useState<Extension | null>(null)
+  const [tabs, setTabs] = useState<EditorTab[]>(() =>
+    initialPath ? [createTab(initialPath)] : [],
+  )
+  const [activeId, setActiveId] = useState(() => tabs[0]?.id ?? '')
   const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<string>()
   const [closePromptOpen, setClosePromptOpen] = useState(false)
-  const dirtyRef = useRef(false)
+  const [closeTarget, setCloseTarget] = useState<'window' | string>('window')
+  const tabsRef = useRef(tabs)
+  const activeIdRef = useRef(activeId)
 
-  const dirty = content !== original
-  dirtyRef.current = dirty
+  tabsRef.current = tabs
+  activeIdRef.current = activeId
 
-  const fileName = remotePath.split('/').filter(Boolean).pop() || remotePath
+  const activeTab = tabs.find((tab) => tab.id === activeId) ?? tabs[0]
+  const dirty = activeTab ? activeTab.content !== activeTab.original : false
+
+  const loadTab = useCallback(
+    async (tabId: string, remotePath: string) => {
+      if (!sessionId || !remotePath) {
+        setTabs((prev) =>
+          prev.map((tab) =>
+            tab.id === tabId
+              ? { ...tab, loading: false, error: t('editorMissingParams') }
+              : tab,
+          ),
+        )
+        return
+      }
+      setTabs((prev) =>
+        prev.map((tab) =>
+          tab.id === tabId ? { ...tab, loading: true, error: undefined } : tab,
+        ),
+      )
+      try {
+        const file = await window.sshApi.fsRead(sessionId, remotePath)
+        setTabs((prev) =>
+          prev.map((tab) =>
+            tab.id === tabId
+              ? {
+                  ...tab,
+                  content: file.content,
+                  original: file.content,
+                  loading: false,
+                }
+              : tab,
+          ),
+        )
+      } catch (err) {
+        setTabs((prev) =>
+          prev.map((tab) =>
+            tab.id === tabId
+              ? {
+                  ...tab,
+                  loading: false,
+                  error: formatAppError(err, t, 'editorLoadFailed'),
+                }
+              : tab,
+          ),
+        )
+      }
+    },
+    [sessionId, t],
+  )
+
+  const openTab = useCallback(
+    (remotePath: string) => {
+      const existing = tabsRef.current.find((tab) => tab.remotePath === remotePath)
+      if (existing) {
+        setActiveId(existing.id)
+        return
+      }
+      const tab = createTab(remotePath)
+      setTabs((prev) => [...prev, tab])
+      setActiveId(tab.id)
+      void loadTab(tab.id, remotePath)
+    },
+    [loadTab],
+  )
+
+  useEffect(() => {
+    if (!initialPath || tabs.length === 0) return
+    void loadTab(tabs[0].id, initialPath)
+  }, [])
+
+  useEffect(() => {
+    return window.sshApi.onEditorOpenTab(({ remotePath }) => {
+      openTab(remotePath)
+    })
+  }, [openTab])
+
+  useEffect(() => {
+    if (!activeTab) {
+      document.title = 'Custom SSH'
+      return
+    }
+    const name = fileNameOf(activeTab.remotePath)
+    const tabDirty = activeTab.content !== activeTab.original
+    document.title = tabDirty
+      ? `• ${name} — Custom SSH`
+      : `${name} — Custom SSH`
+  }, [activeTab])
+
+  useEffect(() => {
+    if (!activeTab) {
+      setLangExt(null)
+      return
+    }
+    let cancelled = false
+    void languageExtensionForPath(activeTab.remotePath).then((ext) => {
+      if (!cancelled) setLangExt(ext)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [activeTab?.remotePath])
+
   const extensions = useMemo(() => {
+    if (!activeTab) return []
     const next = [
       EditorState.tabSize.of(TAB_SIZE),
       indentUnit.of(' '.repeat(TAB_SIZE)),
@@ -74,68 +201,93 @@ export function EditorApp() {
       search({ top: true, createPanel: createEditorSearchPanel(t) }),
       EditorState.phrases.of(editorSearchPhrases(t)),
     ]
-    const lang = languageExtensionForPath(remotePath)
-    if (lang) next.push(lang)
-    if (wantsColorHighlight(remotePath)) {
+    if (langExt) next.push(langExt)
+    if (wantsColorHighlight(activeTab.remotePath)) {
       next.push(syntaxColorExtension(theme === 'light' ? 'light' : 'dark'))
     }
     return next
-  }, [remotePath, t, theme])
+  }, [activeTab, langExt, t, theme])
 
-  const load = useCallback(async () => {
-    if (!sessionId || !remotePath) {
-      setError(t('editorMissingParams'))
-      setLoading(false)
-      return
-    }
-    setLoading(true)
-    setError(undefined)
-    try {
-      const file = await window.sshApi.fsRead(sessionId, remotePath)
-      setContent(file.content)
-      setOriginal(file.content)
-      document.title = `${fileName} — Custom SSH`
-    } catch (err) {
-      setError(formatAppError(err, t, 'editorLoadFailed'))
-    } finally {
-      setLoading(false)
-    }
-  }, [fileName, remotePath, sessionId, t])
-
-  useEffect(() => {
-    void load()
-  }, [load])
-
-  useEffect(() => {
-    document.title = dirty
-      ? `• ${fileName} — Custom SSH`
-      : `${fileName} — Custom SSH`
-  }, [dirty, fileName])
-
-  const save = useCallback(async () => {
-    if (!sessionId || !remotePath || saving) return false
-    setSaving(true)
-    setError(undefined)
-    try {
-      await window.sshApi.fsWrite(sessionId, remotePath, content)
-      setOriginal(content)
-      return true
-    } catch (err) {
-      setError(formatAppError(err, t, 'editorSaveFailed'))
-      return false
-    } finally {
-      setSaving(false)
-    }
-  }, [content, remotePath, saving, sessionId, t])
+  const saveTab = useCallback(
+    async (tabId: string) => {
+      const tab = tabsRef.current.find((item) => item.id === tabId)
+      if (!tab || !sessionId || saving) return false
+      setSaving(true)
+      setTabs((prev) =>
+        prev.map((item) =>
+          item.id === tabId ? { ...item, error: undefined } : item,
+        ),
+      )
+      try {
+        await window.sshApi.fsWrite(sessionId, tab.remotePath, tab.content)
+        setTabs((prev) =>
+          prev.map((item) =>
+            item.id === tabId ? { ...item, original: item.content } : item,
+          ),
+        )
+        return true
+      } catch (err) {
+        setTabs((prev) =>
+          prev.map((item) =>
+            item.id === tabId
+              ? {
+                  ...item,
+                  error: formatAppError(err, t, 'editorSaveFailed'),
+                }
+              : item,
+          ),
+        )
+        return false
+      } finally {
+        setSaving(false)
+      }
+    },
+    [saving, sessionId, t],
+  )
 
   const forceClose = useCallback(async () => {
     setClosePromptOpen(false)
     await window.sshApi.windowForceClose()
   }, [])
 
-  const requestClose = useCallback(() => {
+  const removeTab = useCallback(
+    (tabId: string) => {
+      setTabs((prev) => {
+        const next = prev.filter((tab) => tab.id !== tabId)
+        if (next.length === 0) {
+          void forceClose()
+          return prev
+        }
+        if (activeIdRef.current === tabId) {
+          const index = prev.findIndex((tab) => tab.id === tabId)
+          const fallback = next[Math.max(0, index - 1)] ?? next[0]
+          setActiveId(fallback.id)
+        }
+        return next
+      })
+    },
+    [forceClose],
+  )
+
+  const requestCloseTab = useCallback(
+    (tabId: string) => {
+      const tab = tabsRef.current.find((item) => item.id === tabId)
+      if (!tab) return
+      if (tab.content !== tab.original) {
+        setCloseTarget(tabId)
+        setClosePromptOpen(true)
+        return
+      }
+      removeTab(tabId)
+    },
+    [removeTab],
+  )
+
+  const requestCloseWindow = useCallback(() => {
     if (closePromptOpen) return
-    if (dirtyRef.current) {
+    const tab = tabsRef.current.find((item) => item.id === activeIdRef.current)
+    if (tab && tab.content !== tab.original) {
+      setCloseTarget('window')
       setClosePromptOpen(true)
       return
     }
@@ -143,15 +295,33 @@ export function EditorApp() {
   }, [closePromptOpen, forceClose])
 
   const saveAndClose = useCallback(async () => {
-    const ok = await save()
-    if (ok) await forceClose()
-  }, [forceClose, save])
+    const target = closeTarget
+    const tabId = target === 'window' ? activeIdRef.current : target
+    const ok = await saveTab(tabId)
+    if (!ok) return
+    if (target === 'window') {
+      await forceClose()
+      return
+    }
+    setClosePromptOpen(false)
+    removeTab(target)
+  }, [closeTarget, forceClose, removeTab, saveTab])
+
+  const discardClose = useCallback(async () => {
+    const target = closeTarget
+    if (target === 'window') {
+      await forceClose()
+      return
+    }
+    setClosePromptOpen(false)
+    removeTab(target)
+  }, [closeTarget, forceClose, removeTab])
 
   useEffect(() => {
     const onKeyDown = (ev: KeyboardEvent) => {
       if ((ev.ctrlKey || ev.metaKey) && ev.code === 'KeyS') {
         ev.preventDefault()
-        void save()
+        if (activeIdRef.current) void saveTab(activeIdRef.current)
       }
       if (ev.key === 'Escape' && closePromptOpen) {
         ev.preventDefault()
@@ -160,85 +330,140 @@ export function EditorApp() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [closePromptOpen, save])
+  }, [closePromptOpen, saveTab])
 
   useEffect(() => {
     return window.sshApi.onEditorCloseRequest(() => {
-      requestClose()
+      requestCloseWindow()
     })
-  }, [requestClose])
+  }, [requestCloseWindow])
+
+  const promptTab =
+    closeTarget === 'window'
+      ? tabsRef.current.find((tab) => tab.id === activeIdRef.current)
+      : tabsRef.current.find((tab) => tab.id === closeTarget)
 
   return (
     <div className="app editor-app">
-      <TitleBar onClose={requestClose} />
+      <TitleBar onClose={requestCloseWindow} />
       <div className="editor-shell">
-        <div className="editor-toolbar">
-          <div className="editor-toolbar__meta">
-            <div className="editor-toolbar__name" title={remotePath}>
-              {fileName}
-              <span
-                className={`editor-save-badge${dirty ? ' is-unsaved' : ' is-saved'}`}
-                title={dirty ? t('editorStatusUnsaved') : t('editorStatusSaved')}
-              >
-                {dirty ? <UnsavedIcon /> : <SavedIcon />}
-                <span>
-                  {dirty ? t('editorStatusUnsaved') : t('editorStatusSaved')}
-                </span>
-              </span>
-            </div>
-            <div className="editor-toolbar__path" title={remotePath}>
-              {remotePath}
-            </div>
+        {tabs.length > 0 ? (
+          <div className="editor-tabs terminal-tabs" role="tablist">
+            {tabs.map((tab) => {
+              const name = fileNameOf(tab.remotePath)
+              const tabDirty = tab.content !== tab.original
+              return (
+                <div
+                  key={tab.id}
+                  className={`terminal-tab editor-tab${
+                    tab.id === activeId ? ' is-active' : ''
+                  }`}
+                  role="presentation"
+                >
+                  <button
+                    type="button"
+                    className="terminal-tab__label"
+                    role="tab"
+                    aria-selected={tab.id === activeId}
+                    title={tab.remotePath}
+                    onClick={() => setActiveId(tab.id)}
+                  >
+                    {tabDirty ? '• ' : ''}
+                    {name}
+                  </button>
+                  <button
+                    type="button"
+                    className="terminal-tab__close"
+                    title={t('close')}
+                    aria-label={t('close')}
+                    onClick={() => requestCloseTab(tab.id)}
+                  >
+                    ×
+                  </button>
+                </div>
+              )
+            })}
           </div>
-          <div className="editor-toolbar__actions">
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={() => void load()}
-              disabled={loading || saving}
-            >
-              {t('refresh')}
-            </button>
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={() => void save()}
-              disabled={loading || saving || !dirty}
-            >
-              {saving ? t('editorSaving') : t('editorSave')}
-            </button>
-          </div>
-        </div>
+        ) : null}
 
-        {error ? <div className="error-box editor-error">{error}</div> : null}
-
-        <div className="editor-body">
-          {loading ? (
-            <div className="editor-loading">
-              <ProgressBar indeterminate label={t('loading')} />
+        {activeTab ? (
+          <>
+            <div className="editor-toolbar">
+              <div className="editor-toolbar__meta">
+                <div className="editor-toolbar__name" title={activeTab.remotePath}>
+                  {fileNameOf(activeTab.remotePath)}
+                  <span
+                    className={`editor-save-badge${dirty ? ' is-unsaved' : ' is-saved'}`}
+                    title={
+                      dirty ? t('editorStatusUnsaved') : t('editorStatusSaved')
+                    }
+                  >
+                    {dirty ? <UnsavedIcon /> : <SavedIcon />}
+                    <span>
+                      {dirty ? t('editorStatusUnsaved') : t('editorStatusSaved')}
+                    </span>
+                  </span>
+                </div>
+                <div className="editor-toolbar__path" title={activeTab.remotePath}>
+                  {activeTab.remotePath}
+                </div>
+              </div>
+              <div className="editor-toolbar__actions">
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => void loadTab(activeTab.id, activeTab.remotePath)}
+                  disabled={activeTab.loading || saving}
+                >
+                  {t('refresh')}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => void saveTab(activeTab.id)}
+                  disabled={activeTab.loading || saving || !dirty}
+                >
+                  {saving ? t('editorSaving') : t('editorSave')}
+                </button>
+              </div>
             </div>
-          ) : error && !content ? null : (
-            <CodeMirror
-              value={content}
-              height="100%"
-              theme={theme === 'light' ? 'light' : oneDark}
-              extensions={extensions}
-              basicSetup={{
-                lineNumbers: true,
-                foldGutter: true,
-                highlightActiveLine: true,
-                autocompletion: true,
-              }}
-              onChange={(value) => {
-                setContent(value)
-              }}
-              className="editor-codemirror"
-            />
-          )}
-        </div>
+
+            {activeTab.error ? (
+              <div className="error-box editor-error">{activeTab.error}</div>
+            ) : null}
+
+            <div className="editor-body" role="tabpanel">
+              {activeTab.loading ? (
+                <div className="editor-loading">
+                  <ProgressBar indeterminate label={t('loading')} />
+                </div>
+              ) : activeTab.error && !activeTab.content ? null : (
+                <Suspense fallback={<EditorSkeleton />}>
+                  <EditorCodeMirror
+                    tabId={activeTab.id}
+                    value={activeTab.content}
+                    theme={theme}
+                    extensions={extensions}
+                    onChange={(value) => {
+                      setTabs((prev) =>
+                        prev.map((tab) =>
+                          tab.id === activeTab.id ? { ...tab, content: value } : tab,
+                        ),
+                      )
+                    }}
+                  />
+                </Suspense>
+              )}
+            </div>
+          </>
+        ) : (
+          <div className="editor-loading">
+            <ProgressBar indeterminate label={t('loading')} />
+          </div>
+        )}
       </div>
 
-      {closePromptOpen ? (
+      {closePromptOpen && promptTab ? (
         <div className="editor-modal-backdrop" role="presentation">
           <div
             className="editor-modal"
@@ -258,8 +483,8 @@ export function EditorApp() {
                 {t('editorUnsavedMessage')}
               </p>
               <p className="editor-modal__detail">{t('editorUnsavedDetail')}</p>
-              <p className="editor-modal__file" title={remotePath}>
-                {fileName}
+              <p className="editor-modal__file" title={promptTab.remotePath}>
+                {fileNameOf(promptTab.remotePath)}
               </p>
             </div>
             <div className="editor-modal__actions">
@@ -275,7 +500,7 @@ export function EditorApp() {
                 type="button"
                 className="btn btn-danger"
                 disabled={saving}
-                onClick={() => void forceClose()}
+                onClick={() => void discardClose()}
               >
                 {t('editorDiscard')}
               </button>

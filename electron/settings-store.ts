@@ -5,6 +5,7 @@ import {
   APP_LOCALE_IDS,
   HOTKEY_IDS,
   defaultHotkeys,
+  defaultSettings,
   type AppLocale,
   type AppSettings,
   type AppTheme,
@@ -16,13 +17,7 @@ import {
 
 const FILE_NAME = 'settings.json'
 
-const DEFAULTS: AppSettings = {
-  locale: 'ru',
-  theme: 'dark',
-  hotkeys: defaultHotkeys(),
-  skippedUpdateVersion: null,
-  closeAction: 'ask',
-}
+const DEFAULTS: AppSettings = defaultSettings()
 
 function settingsPath() {
   return path.join(app.getPath('userData'), FILE_NAME)

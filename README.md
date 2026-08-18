@@ -47,7 +47,7 @@
 | 🎨 | Тёмная / светлая тема, русский и английский |
 | ⬆️ | Обновления: авто на Windows (Setup) и Linux (AppImage); на macOS — ссылка на Releases |
 
-Текущая версия в репозитории: **`3.6.2`** (актуальный номер всегда в [Releases](https://github.com/GoblinThug/Custom-SSH/releases)).
+Текущая версия в репозитории: **`4.1.2`** (актуальный номер всегда в [Releases](https://github.com/GoblinThug/Custom-SSH/releases)).
 
 ---
 
@@ -266,6 +266,9 @@ git clone https://github.com/GoblinThug/Custom-SSH.git
 cd Custom-SSH
 npm install
 npm run dev
+npm test
+npm run lint
+npm run typecheck
 ```
 
 Локальная сборка:
@@ -313,7 +316,7 @@ Workflow [`.github/workflows/release.yml`](.github/workflows/release.yml) соб
 | 🎨 | Dark / light theme, English & Russian |
 | ⬆️ | Updates: auto on Windows Setup and Linux AppImage; on macOS — open Releases |
 
-Repo version: **`3.6.2`** (always check [Releases](https://github.com/GoblinThug/Custom-SSH/releases) for the latest).
+Repo version: **`4.1.2`** (always check [Releases](https://github.com/GoblinThug/Custom-SSH/releases) for the latest).
 
 ---
 
@@ -527,6 +530,9 @@ git clone https://github.com/GoblinThug/Custom-SSH.git
 cd Custom-SSH
 npm install
 npm run dev
+npm test
+npm run lint
+npm run typecheck
 ```
 
 Local build:

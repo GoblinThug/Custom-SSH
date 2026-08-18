@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useSettings } from '../i18n/SettingsContext'
+import { formatMessage } from '../utils/formatMessage'
 import { ProgressBar } from './ProgressBar'
 
 type UpdateStatus =
@@ -53,16 +54,6 @@ function clearLegacySkippedVersion() {
   } catch {
     // ignore
   }
-}
-
-function formatMessage(
-  template: string,
-  values: Record<string, string | number>,
-) {
-  return Object.entries(values).reduce(
-    (text, [key, value]) => text.replaceAll(`{${key}}`, String(value)),
-    template,
-  )
 }
 
 function UpdateIcon() {

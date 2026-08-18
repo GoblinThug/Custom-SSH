@@ -1,17 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { TitleBar } from './components/TitleBar'
 import { ProgressBar } from './components/ProgressBar'
 import { useSettings } from './i18n/SettingsContext'
 import { formatAppError } from './utils/formatAppError'
+import { readWindowQuery } from './utils/windowQuery'
 import { formatBytes } from './imageFiles'
-
-function readQuery() {
-  const params = new URLSearchParams(window.location.search)
-  return {
-    sessionId: params.get('sessionId') ?? '',
-    remotePath: params.get('path') ?? '',
-  }
-}
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
@@ -77,7 +70,8 @@ function FullscreenIcon({ active }: { active: boolean }) {
 
 export function ViewerApp() {
   const { t } = useSettings()
-  const { sessionId, remotePath } = useMemo(() => readQuery(), [])
+  const [sessionId, setSessionId] = useState(() => readWindowQuery().sessionId)
+  const [remotePath, setRemotePath] = useState(() => readWindowQuery().remotePath)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>()
   const [src, setSrc] = useState<string>()
@@ -114,21 +108,34 @@ export function ViewerApp() {
     setSrc(undefined)
     setFileSize(undefined)
     setNatural(null)
+    scaleRef.current = 1
+    panRef.current = { x: 0, y: 0 }
+    setScale(1)
+    setPan({ x: 0, y: 0 })
+    setAnimateScale(false)
+    const name = remotePath.split('/').filter(Boolean).pop() || remotePath
     try {
       const file = await window.sshApi.fsReadBinary(sessionId, remotePath)
       setSrc(`data:${file.mimeType};base64,${file.base64}`)
       setFileSize(file.size)
-      document.title = `${fileName} — Custom SSH`
+      document.title = `${name} — Custom SSH`
     } catch (err) {
       setError(formatAppError(err, t, 'viewerLoadFailed'))
     } finally {
       setLoading(false)
     }
-  }, [fileName, remotePath, sessionId, t])
+  }, [remotePath, sessionId, t])
 
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    return window.sshApi.onViewerNavigate(({ sessionId: nextSessionId, remotePath: nextPath }) => {
+      setSessionId(nextSessionId)
+      setRemotePath(nextPath)
+    })
+  }, [])
 
   useEffect(() => {
     return window.sshApi.onViewerCloseRequest(() => {

@@ -1,56 +1,62 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { v4 as uuid } from 'uuid'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { TitleBar } from './components/TitleBar'
 import { Sidebar } from './components/Sidebar'
-import { ConnectionForm } from './components/ConnectionForm'
-import { TerminalView } from './components/TerminalView'
-import { FileTreePanel } from './components/FileTreePanel'
-import { SettingsPanel } from './components/SettingsPanel'
-import { HotkeysPanel } from './components/HotkeysPanel'
-import { UpdatePrompt } from './components/UpdatePrompt'
-import { TransferDock } from './components/TransferDock'
+import { TerminalEmptyState } from './components/TerminalEmptyState'
 import { ProgressBar } from './components/ProgressBar'
+import { TerminalTabBar } from './components/TerminalTabBar'
+import { AppModal } from './components/AppModal'
+import { ConnectionFormSkeleton } from './components/skeleton/ConnectionFormSkeleton'
+import { DrawerPanelSkeleton } from './components/skeleton/DrawerPanelSkeleton'
+import { FileTreeSkeleton } from './components/skeleton/FileTreeSkeleton'
+import { TerminalSkeleton } from './components/skeleton/TerminalSkeleton'
 import { useSettings } from './i18n/SettingsContext'
-import type { MessageKey } from './i18n/messages'
-import { formatAppError } from './utils/formatAppError'
-import {
-  emptyDraft,
-  type ConnectPayload,
-  type ConnectionDraft,
-  type ConnectionFolder,
-  type ConnectionProtocol,
-  type FolderColor,
-  type SavedConnection,
-  type SessionStatus,
-  type Workspace,
-} from './types'
+import { useLazyMount } from './hooks/useLazyMount'
+import { formatMessage } from './utils/formatMessage'
+import { emptyDraft, type ConnectionDraft } from './types'
+import { connectionLabelOf, toDraft } from './utils/connectionDraft'
+import { useConnectionPing } from './hooks/useConnectionPing'
+import { useWorkspace } from './hooks/useWorkspace'
+import { useSessions } from './hooks/useSessions'
+import { useQuitPrompt } from './hooks/useQuitPrompt'
 
-type TerminalTab = {
-  key: string
-  sessionId: string
-  shellId: string | null
-  title: string
-  status: SessionStatus
-  /** Always `user@host:port` for the toolbar / tab tooltip. */
-  label: string
-  connectionId?: string
-  reconnectAttempt?: number
-  pending?: boolean
-}
+const TerminalView = lazy(() =>
+  import('./components/TerminalView').then((mod) => ({
+    default: mod.TerminalView,
+  })),
+)
+const FileTreePanel = lazy(() =>
+  import('./components/FileTreePanel').then((mod) => ({
+    default: mod.FileTreePanel,
+  })),
+)
+const SettingsPanel = lazy(() =>
+  import('./components/SettingsPanel').then((mod) => ({
+    default: mod.SettingsPanel,
+  })),
+)
+const HotkeysPanel = lazy(() =>
+  import('./components/HotkeysPanel').then((mod) => ({
+    default: mod.HotkeysPanel,
+  })),
+)
+const UpdatePrompt = lazy(() =>
+  import('./components/UpdatePrompt').then((mod) => ({
+    default: mod.UpdatePrompt,
+  })),
+)
+const TransferDock = lazy(() =>
+  import('./components/TransferDock').then((mod) => ({
+    default: mod.TransferDock,
+  })),
+)
+const ConnectionForm = lazy(() =>
+  import('./components/ConnectionForm').then((mod) => ({
+    default: mod.ConnectionForm,
+  })),
+)
 
-type SessionRuntime = {
-  payload: ConnectPayload
-  protocol: ConnectionProtocol
-  wantConnected: boolean
-  autoReconnect: boolean
-  suppressReconnect: boolean
-  reconnectTimer?: ReturnType<typeof setTimeout>
-  reconnectAttempt: number
-  pingFail: number
-  label: string
-  connectionId?: string
-  /** Guards against stale connect() promises updating the wrong tab. */
-  connectToken: number
+export function preloadTerminalView() {
+  void import('./components/TerminalView')
 }
 
 const TREE_PIN_KEY = 'customssh.fileTreePinned'
@@ -71,112 +77,9 @@ function writeTreePinned(pinned: boolean) {
   }
 }
 
-function formatMessage(
-  template: string,
-  values: Record<string, string | number>,
-) {
-  return Object.entries(values).reduce(
-    (text, [key, value]) => text.replaceAll(`{${key}}`, String(value)),
-    template,
-  )
-}
-
-function toDraft(connection?: SavedConnection | null): ConnectionDraft {
-  if (!connection) return emptyDraft()
-  return {
-    id: connection.id,
-    name: connection.name,
-    host: connection.host,
-    port: connection.port,
-    username: connection.username,
-    authMethod: connection.authMethod,
-    password: '',
-    privateKeyPath: connection.privateKeyPath ?? '',
-    passphrase: '',
-    folderId: connection.folderId ?? null,
-  }
-}
-
-function validate(
-  draft: ConnectionDraft,
-  saved?: SavedConnection,
-): MessageKey | null {
-  if (!draft.name.trim()) return 'errName'
-  if (!draft.host.trim()) return 'errHost'
-  if (!draft.username.trim()) return 'errUsername'
-  if (!draft.port || draft.port < 1 || draft.port > 65535) {
-    return 'errPort'
-  }
-  if (
-    draft.authMethod === 'password' &&
-    !draft.password &&
-    !saved?.password
-  ) {
-    return 'errPassword'
-  }
-  if (draft.authMethod === 'privateKey' && !draft.privateKeyPath.trim()) {
-    return 'errPrivateKey'
-  }
-  return null
-}
-
-function applyWorkspace(
-  workspace: Workspace,
-  setFolders: (folders: ConnectionFolder[]) => void,
-  setConnections: (connections: SavedConnection[]) => void,
-) {
-  setFolders(workspace.folders)
-  setConnections(workspace.connections)
-}
-
-function connectionLabelOf(draft: ConnectionDraft) {
-  if (!draft.host.trim()) return undefined
-  return `${draft.username.trim() || 'user'}@${draft.host.trim()}:${draft.port || 22}`
-}
-
-function payloadLabel(payload: ConnectPayload) {
-  return `${payload.username || 'user'}@${payload.host}:${payload.port || 22}`
-}
-
-function inferProtocolFromDraft(
-  draft: ConnectionDraft,
-  saved?: SavedConnection,
-): ConnectionProtocol {
-  const host = draft.host.trim().toLowerCase()
-  if (host.startsWith('ftp://')) return 'ftp'
-  if (host.startsWith('sftp://')) return 'sftp'
-  if (host.startsWith('ssh://')) return 'ssh'
-
-  if (draft.port === 21) return 'ftp'
-  if (draft.port === 2022) return 'sftp'
-  if (draft.port === 22) return 'ssh'
-
-  if (saved?.protocol) return saved.protocol
-  if (draft.authMethod === 'privateKey') return 'ssh'
-  return 'ssh'
-}
-
-function reorderTabs(
-  list: TerminalTab[],
-  fromKey: string,
-  toKey: string,
-): TerminalTab[] {
-  if (fromKey === toKey) return list
-  const fromIndex = list.findIndex((tab) => tab.key === fromKey)
-  const toIndex = list.findIndex((tab) => tab.key === toKey)
-  if (fromIndex < 0 || toIndex < 0) return list
-  const next = [...list]
-  const [moved] = next.splice(fromIndex, 1)
-  next.splice(toIndex, 0, moved)
-  return next
-}
-
 export default function App() {
-  const { t, theme, closeAction } = useSettings()
-  const closeActionRef = useRef(closeAction)
-  closeActionRef.current = closeAction
-  const [folders, setFolders] = useState<ConnectionFolder[]>([])
-  const [connections, setConnections] = useState<SavedConnection[]>([])
+  const { t, theme } = useSettings()
+  const workspace = useWorkspace()
   const [query, setQuery] = useState('')
   const [draft, setDraft] = useState<ConnectionDraft>(emptyDraft())
   const [selectedId, setSelectedId] = useState<string>()
@@ -187,52 +90,12 @@ export default function App() {
   const [treePinned, setTreePinned] = useState(readTreePinned)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [hotkeysOpen, setHotkeysOpen] = useState(false)
-  const [pingMs, setPingMs] = useState<number | null>(null)
-  const [tabs, setTabs] = useState<TerminalTab[]>([])
-  const [activeTabKey, setActiveTabKey] = useState<string | null>(null)
-  const [renamingTabKey, setRenamingTabKey] = useState<string | null>(null)
-  const [renameDraft, setRenameDraft] = useState('')
-  const [openingShell, setOpeningShell] = useState(false)
-  const [draggingTabKey, setDraggingTabKey] = useState<string | null>(null)
-  const [dragOverTabKey, setDragOverTabKey] = useState<string | null>(null)
-  const [sameReconnectPrompt, setSameReconnectPrompt] = useState<{
-    target: string
-  } | null>(null)
-  const sameReconnectResolverRef = useRef<((ok: boolean) => void) | null>(null)
-  const [quitPromptOpen, setQuitPromptOpen] = useState(false)
-  const renameInputRef = useRef<HTMLInputElement | null>(null)
-
-  const tabsRef = useRef<TerminalTab[]>([])
-  const activeTabKeyRef = useRef<string | null>(null)
-  const sessionsRef = useRef<Map<string, SessionRuntime>>(new Map())
-  const connectTokenRef = useRef(0)
-  const themeRef = useRef(theme)
-  const tRef = useRef(t)
-  const openingShellRef = useRef(false)
-  const connectionsRef = useRef<SavedConnection[]>([])
   const treePinnedRef = useRef(treePinned)
-  /** Ignore shell-closed events while intentionally replacing a tab's connection. */
-  const ignoreShellClosedRef = useRef(new Set<string>())
 
-  useEffect(() => {
-    themeRef.current = theme
-  }, [theme])
-
-  useEffect(() => {
-    tRef.current = t
-  }, [t])
-
-  useEffect(() => {
-    tabsRef.current = tabs
-  }, [tabs])
-
-  useEffect(() => {
-    connectionsRef.current = connections
-  }, [connections])
-
-  useEffect(() => {
-    activeTabKeyRef.current = activeTabKey
-  }, [activeTabKey])
+  const editMounted = useLazyMount(editOpen)
+  const treeMounted = useLazyMount(treeOpen || treePinned)
+  const settingsMounted = useLazyMount(settingsOpen)
+  const hotkeysMounted = useLazyMount(hotkeysOpen)
 
   useEffect(() => {
     treePinnedRef.current = treePinned
@@ -248,376 +111,32 @@ export default function App() {
     if (pinned) setTreeOpen(true)
   }, [])
 
-  const syncDraftFromTab = useCallback((tab: TerminalTab | null | undefined) => {
-    if (!tab?.connectionId) return
-    const connection = connectionsRef.current.find(
-      (item) => item.id === tab.connectionId,
-    )
-    if (!connection) return
-    setSelectedId(connection.id)
-    setDraft(toDraft(connection))
-  }, [])
-
-  const activeTab = useMemo(
-    () => tabs.find((tab) => tab.key === activeTabKey) ?? null,
-    [tabs, activeTabKey],
-  )
-
-  const patchTabsForSession = useCallback(
-    (sessionId: string, patch: Partial<TerminalTab>) => {
-      setTabs((prev) =>
-        prev.map((tab) =>
-          tab.sessionId === sessionId ? { ...tab, ...patch } : tab,
-        ),
-      )
-    },
-    [],
-  )
-
-  const removeTabsForSession = useCallback((sessionId: string) => {
-    setTabs((prev) => {
-      const next = prev.filter((tab) => tab.sessionId !== sessionId)
-      if (
-        activeTabKeyRef.current &&
-        prev.some(
-          (tab) =>
-            tab.key === activeTabKeyRef.current && tab.sessionId === sessionId,
-        )
-      ) {
-        setActiveTabKey(next[next.length - 1]?.key ?? null)
-      }
-      return next
-    })
-  }, [])
-
-  const clearReconnectTimer = useCallback((sessionId: string) => {
-    const runtime = sessionsRef.current.get(sessionId)
-    if (!runtime?.reconnectTimer) return
-    clearTimeout(runtime.reconnectTimer)
-    runtime.reconnectTimer = undefined
-  }, [])
-
-  const stopSessionReconnect = useCallback(
-    (sessionId: string) => {
-      const runtime = sessionsRef.current.get(sessionId)
-      if (!runtime) return
-      clearReconnectTimer(sessionId)
-      runtime.wantConnected = false
-      runtime.autoReconnect = false
-      runtime.suppressReconnect = false
-      runtime.reconnectAttempt = 0
-      runtime.pingFail = 0
-      patchTabsForSession(sessionId, { reconnectAttempt: 0 })
-    },
-    [clearReconnectTimer, patchTabsForSession],
-  )
-
-  const scheduleReconnect = useCallback(
-    (sessionId: string) => {
-      const runtime = sessionsRef.current.get(sessionId)
-      if (!runtime?.wantConnected || !runtime.autoReconnect) return
-      if (runtime.reconnectTimer != null) return
-
-      runtime.reconnectAttempt += 1
-      const attempt = runtime.reconnectAttempt
-      patchTabsForSession(sessionId, {
-        status: 'reconnecting',
-        reconnectAttempt: attempt,
-        shellId: null,
-        pending: false,
-      })
-      closeTreeIfUnpinned()
-      setPingMs(null)
-
-      const delay = Math.min(30_000, 1000 * 2 ** Math.min(attempt - 1, 5))
-      runtime.reconnectTimer = setTimeout(() => {
-        runtime.reconnectTimer = undefined
-        if (!runtime.wantConnected || !runtime.autoReconnect) return
-
-        runtime.suppressReconnect = true
-        patchTabsForSession(sessionId, {
-          status: 'reconnecting',
-          reconnectAttempt: runtime.reconnectAttempt,
-        })
-
-        void window.sshApi
-          .connect(sessionId, {
-            ...runtime.payload,
-            protocolHint: runtime.protocol,
-            theme: themeRef.current,
-          })
-          .then((result) => {
-            if (!result.ok) {
-              if ('cancelled' in result && result.cancelled) return
-              if (!runtime.wantConnected || !runtime.autoReconnect) return
-              scheduleReconnect(sessionId)
-              return
-            }
-            runtime.autoReconnect = true
-            const shellId = result.shellId ?? null
-            runtime.protocol = result.protocol ?? runtime.protocol
-            setTabs((prev) => {
-              const sessionTabs = prev.filter((tab) => tab.sessionId === sessionId)
-              const keepKey = sessionTabs[0]?.key
-              const title =
-                sessionTabs[0]?.title ??
-                formatMessage(tRef.current('terminalTab'), { n: 1 })
-              const others = prev.filter((tab) => tab.sessionId !== sessionId)
-              if (!keepKey || !shellId) return others
-              return [
-                ...others,
-                {
-                  key: keepKey,
-                  sessionId,
-                  shellId,
-                  title,
-                  status: 'connected',
-                  label: runtime.label || payloadLabel(runtime.payload),
-                  connectionId: runtime.connectionId,
-                  reconnectAttempt: 0,
-                  pending: false,
-                },
-              ]
-            })
-          })
-          .catch(() => {
-            if (!runtime.wantConnected || !runtime.autoReconnect) return
-            scheduleReconnect(sessionId)
-          })
-          .finally(() => {
-            runtime.suppressReconnect = false
-          })
-      }, delay)
-    },
-    [closeTreeIfUnpinned, patchTabsForSession],
-  )
-
-  useEffect(() => {
-    void window.sshApi.loadWorkspace().then((workspace) => {
-      applyWorkspace(workspace, setFolders, setConnections)
-    })
-  }, [])
-
-  useEffect(() => {
-    return window.sshApi.onStatus((incomingSessionId, payload) => {
-      const runtime = sessionsRef.current.get(incomingSessionId)
-      if (!runtime) return
-
-      if (payload.status === 'connected') {
-        clearReconnectTimer(incomingSessionId)
-        runtime.reconnectAttempt = 0
-        runtime.autoReconnect = true
-        runtime.suppressReconnect = false
-        runtime.pingFail = 0
-        patchTabsForSession(incomingSessionId, {
-          status: 'connected',
-          reconnectAttempt: 0,
-          pending: false,
-        })
-        setBusy(false)
-        setError(undefined)
-        setEditOpen(false)
-        if (treePinnedRef.current) setTreeOpen(true)
-        return
-      }
-
-      if (payload.status === 'connecting') {
-        if (!runtime.suppressReconnect) {
-          patchTabsForSession(incomingSessionId, { status: 'connecting' })
-        }
-        return
-      }
-
-      if (payload.status === 'disconnected' || payload.status === 'error') {
-        if (runtime.suppressReconnect) return
-
-        runtime.pingFail = 0
-        const userHangup = payload.reason === 'user'
-        const shouldReconnect =
-          !userHangup && runtime.wantConnected && runtime.autoReconnect
-
-        if (shouldReconnect) {
-          scheduleReconnect(incomingSessionId)
-          return
-        }
-
-        sessionsRef.current.delete(incomingSessionId)
-        removeTabsForSession(incomingSessionId)
-        setBusy(false)
-        if (payload.status === 'error') {
-          setError(
-            formatAppError(
-              payload.message,
-              tRef.current,
-              'errConnectionFailed',
-            ),
-          )
-        }
-        if (activeTabKeyRef.current == null) {
-          closeTreeIfUnpinned()
-          setPingMs(null)
-        }
-      }
-    })
-  }, [
-    clearReconnectTimer,
+  const sessions = useSessions({
+    theme,
+    t,
+    connections: workspace.connections,
+    connectionsRef: workspace.connectionsRef,
+    applyWorkspace: workspace.apply,
     closeTreeIfUnpinned,
-    patchTabsForSession,
-    removeTabsForSession,
-    scheduleReconnect,
-  ])
+    treePinnedRef,
+    setTreeOpen,
+    setBusy,
+    setError,
+    setEditOpen,
+    setSelectedId,
+    setDraft,
+  })
 
-  useEffect(() => {
-    return window.sshApi.onShellClosed((incomingSessionId, shellId) => {
-      const ignoreKey = `${incomingSessionId}:${shellId}`
-      if (ignoreShellClosedRef.current.delete(ignoreKey)) return
+  const pingMs = useConnectionPing({
+    sessionId: sessions.activeTab?.sessionId,
+    connected: sessions.activeTab?.status === 'connected',
+    sessionsRef: sessions.sessionsRef,
+  })
 
-      const runtime = sessionsRef.current.get(incomingSessionId)
-      if (runtime?.suppressReconnect) return
+  const { quitPromptOpen, setQuitPromptOpen, hideToTray, quitApp } =
+    useQuitPrompt()
 
-      setTabs((prev) => {
-        const next = prev.filter(
-          (tab) =>
-            !(tab.sessionId === incomingSessionId && tab.shellId === shellId),
-        )
-        if (
-          activeTabKeyRef.current &&
-          prev.some(
-            (tab) =>
-              tab.key === activeTabKeyRef.current &&
-              tab.sessionId === incomingSessionId &&
-              tab.shellId === shellId,
-          )
-        ) {
-          setActiveTabKey(next[next.length - 1]?.key ?? null)
-        }
-        return next
-      })
-    })
-  }, [])
-
-  useEffect(() => {
-    for (const runtime of sessionsRef.current.values()) {
-      runtime.payload = { ...runtime.payload, theme }
-    }
-  }, [theme])
-
-  useEffect(() => {
-    return () => {
-      for (const sessionId of sessionsRef.current.keys()) {
-        clearReconnectTimer(sessionId)
-      }
-    }
-  }, [clearReconnectTimer])
-
-  useEffect(() => {
-    if (!renamingTabKey) return
-    const input = renameInputRef.current
-    if (!input) return
-    input.focus()
-    input.select()
-  }, [renamingTabKey])
-
-  useEffect(() => {
-    const sessionId = activeTab?.sessionId
-    const status = activeTab?.status
-    if (!sessionId || status !== 'connected') {
-      setPingMs(null)
-      return
-    }
-
-    const runtime = sessionsRef.current.get(sessionId)
-    if (!runtime) {
-      setPingMs(null)
-      return
-    }
-
-    let cancelled = false
-    let timer: ReturnType<typeof setTimeout> | undefined
-
-    const tick = async () => {
-      const current = sessionsRef.current.get(sessionId)
-      if (!current) return
-      try {
-        const ms = await window.sshApi.ping(sessionId)
-        if (cancelled) return
-        current.pingFail = 0
-        setPingMs(ms)
-      } catch (err) {
-        if (cancelled) return
-        setPingMs(null)
-        const message =
-          err instanceof Error ? err.message : String(err ?? '')
-        const looksDead =
-          /connection (lost|closed|reset)|no response|session not found|ping timeout|econnreset|socket hang up|unable to exec/i.test(
-            message,
-          )
-        if (!looksDead) return
-        current.pingFail += 1
-        if (
-          current.pingFail >= 2 &&
-          current.wantConnected &&
-          current.autoReconnect
-        ) {
-          current.pingFail = 0
-          window.sshApi.disconnect(sessionId, 'drop')
-          return
-        }
-      }
-      if (!cancelled) {
-        timer = setTimeout(() => {
-          void tick()
-        }, 3000)
-      }
-    }
-
-    void tick()
-    return () => {
-      cancelled = true
-      if (timer) clearTimeout(timer)
-    }
-  }, [activeTab?.sessionId, activeTab?.status])
-
-  useEffect(() => {
-    for (const tab of tabsRef.current) {
-      if (tab.status === 'connected' && tab.sessionId) {
-        window.sshApi.applyTheme(tab.sessionId, theme)
-      }
-    }
-  }, [theme])
-
-  const activateTab = (tabKey: string) => {
-    setActiveTabKey(tabKey)
-    const tab = tabsRef.current.find((item) => item.key === tabKey)
-    syncDraftFromTab(tab)
-  }
-
-  const beginRenameTab = (tabKey: string, title: string) => {
-    activateTab(tabKey)
-    setRenamingTabKey(tabKey)
-    setRenameDraft(title)
-  }
-
-  const commitRenameTab = () => {
-    if (!renamingTabKey) return
-    const next = renameDraft.trim()
-    if (next) {
-      setTabs((prev) =>
-        prev.map((tab) =>
-          tab.key === renamingTabKey ? { ...tab, title: next } : tab,
-        ),
-      )
-    }
-    setRenamingTabKey(null)
-    setRenameDraft('')
-  }
-
-  const cancelRenameTab = () => {
-    setRenamingTabKey(null)
-    setRenameDraft('')
-  }
-
-  const handleSelect = (connection: SavedConnection) => {
+  const handleSelect = (connection: (typeof workspace.connections)[number]) => {
     setSelectedId(connection.id)
     setDraft(toDraft(connection))
     setError(undefined)
@@ -632,57 +151,20 @@ export default function App() {
   }
 
   const handleSave = async () => {
-    const saved = connections.find((item) => item.id === draft.id)
-    const validationError = validate(draft, saved)
-    if (validationError) {
-      setError(t(validationError))
+    const result = await workspace.saveDraft(draft)
+    if ('error' in result) {
+      setError(t(result.error))
       return
     }
-
-    const now = new Date().toISOString()
-    const connection: SavedConnection = {
-      id: draft.id ?? uuid(),
-      name: draft.name.trim(),
-      host: draft.host.trim(),
-      port: draft.port,
-      username: draft.username.trim(),
-      authMethod: draft.authMethod,
-      protocol: inferProtocolFromDraft(draft, saved),
-      password:
-        draft.authMethod === 'password'
-          ? draft.password || saved?.password
-          : undefined,
-      privateKeyPath:
-        draft.authMethod === 'privateKey' ? draft.privateKeyPath.trim() : undefined,
-      passphrase:
-        draft.authMethod === 'privateKey'
-          ? draft.passphrase || saved?.passphrase
-          : undefined,
-      folderId: draft.folderId,
-      createdAt: saved?.createdAt ?? now,
-      updatedAt: now,
-      lastConnectedAt: saved?.lastConnectedAt,
-    }
-
-    const workspace = await window.sshApi.saveConnection(connection)
-    applyWorkspace(workspace, setFolders, setConnections)
-    setSelectedId(connection.id)
-    setDraft(toDraft(connection))
+    setSelectedId(result.connection.id)
+    setDraft(toDraft(result.connection))
     setError(undefined)
   }
 
   const handleDelete = async () => {
     if (!draft.id) return
-    for (const [sessionId, runtime] of sessionsRef.current) {
-      if (runtime.connectionId === draft.id) {
-        stopSessionReconnect(sessionId)
-        window.sshApi.disconnect(sessionId, 'user')
-        sessionsRef.current.delete(sessionId)
-        removeTabsForSession(sessionId)
-      }
-    }
-    const workspace = await window.sshApi.deleteConnection(draft.id)
-    applyWorkspace(workspace, setFolders, setConnections)
+    sessions.disconnectSessionsForConnection(draft.id)
+    await workspace.deleteConnection(draft.id)
     handleNew()
   }
 
@@ -693,420 +175,22 @@ export default function App() {
     }
   }
 
-  const isSameActiveTarget = (
-    tab: TerminalTab,
-    payload: ConnectPayload,
-    connectionId?: string,
-  ) => {
-    if (
-      tab.status !== 'connected' &&
-      tab.status !== 'connecting' &&
-      tab.status !== 'reconnecting'
-    ) {
-      return false
-    }
-    if (connectionId && tab.connectionId && tab.connectionId === connectionId) {
-      return true
-    }
-    const runtime = sessionsRef.current.get(tab.sessionId)
-    if (runtime) {
-      return (
-        runtime.payload.host === payload.host &&
-        runtime.payload.port === payload.port &&
-        runtime.payload.username === payload.username
-      )
-    }
-    return tab.label === payloadLabel(payload)
-  }
-
-  const handleConnect = async (
-    sourceDraft: ConnectionDraft = draft,
-    opts?: { openNewTab?: boolean },
-  ) => {
-    const openNewTab = !!opts?.openNewTab
-    const saved = connections.find((item) => item.id === sourceDraft.id)
-    const validationError = validate(sourceDraft, saved)
-    if (validationError) {
-      setSelectedId(sourceDraft.id)
-      setDraft(sourceDraft)
-      setEditOpen(true)
-      setError(t(validationError))
-      return
-    }
-
-    const payload: ConnectPayload = {
-      host: sourceDraft.host.trim(),
-      port: sourceDraft.port,
-      username: sourceDraft.username.trim(),
-      authMethod: sourceDraft.authMethod,
-      password: sourceDraft.password || saved?.password,
-      privateKeyPath: sourceDraft.privateKeyPath.trim() || undefined,
-      passphrase: sourceDraft.passphrase || saved?.passphrase,
-      cols: 120,
-      rows: 30,
-      theme,
-      protocolHint: saved?.protocol ?? inferProtocolFromDraft(sourceDraft, saved),
-    }
-    const label = payloadLabel(payload)
-    const title = sourceDraft.name.trim() || label
-
-    const current = activeTab
-    if (current && isSameActiveTarget(current, payload, sourceDraft.id)) {
-      const proceed = await new Promise<boolean>((resolve) => {
-        sameReconnectResolverRef.current = resolve
-        setSameReconnectPrompt({ target: current.label || label })
-      })
-      if (!proceed) return
-    }
-
-    setSelectedId(sourceDraft.id)
-    setDraft(sourceDraft)
-    setBusy(true)
-    setError(undefined)
-    closeTreeIfUnpinned()
-    setPingMs(null)
-
-    const nextSessionId = uuid()
-    // By default we replace the active tab. For "connect from sidebar"
-    // we create a new tab so existing SFTP sessions keep running.
-    const replaceSessionId = openNewTab ? undefined : current?.sessionId
-    const replaceShellId = openNewTab ? undefined : current?.shellId
-    const tabKey = openNewTab ? uuid() : current?.key ?? uuid()
-
-    const siblingCount = replaceSessionId
-      ? tabsRef.current.filter(
-          (tab) =>
-            tab.sessionId === replaceSessionId && tab.key !== tabKey,
-        ).length
-      : 0
-
-    const connectToken = ++connectTokenRef.current
-    sessionsRef.current.set(nextSessionId, {
-      payload,
-      protocol: 'sftp',
-      wantConnected: true,
-      autoReconnect: false,
-      suppressReconnect: false,
-      reconnectAttempt: 0,
-      pingFail: 0,
-      label,
-      connectionId: sourceDraft.id,
-      connectToken,
-    })
-
-    const nextTab: TerminalTab = {
-      key: tabKey,
-      sessionId: nextSessionId,
-      shellId: null,
-      title,
-      status: 'connecting',
-      label,
-      connectionId: sourceDraft.id,
-      pending: false,
-    }
-
-    // Move the active tab to the new session first so shell-closed events from
-    // the old connection cannot remove it (or other tabs).
-    setTabs((prev) => {
-      if (!current || openNewTab) return [...prev, nextTab]
-      return prev.map((tab) => (tab.key === tabKey ? nextTab : tab))
-    })
-    setActiveTabKey(tabKey)
-
-    if (replaceSessionId) {
-      if (replaceShellId) {
-        ignoreShellClosedRef.current.add(
-          `${replaceSessionId}:${replaceShellId}`,
-        )
-      }
-      if (siblingCount === 0) {
-        stopSessionReconnect(replaceSessionId)
-        sessionsRef.current.delete(replaceSessionId)
-        window.sshApi.disconnect(replaceSessionId, 'user')
-      } else if (replaceShellId) {
-        window.sshApi.closeShell(replaceSessionId, replaceShellId)
-      }
-    }
-
-    try {
-      const result = await window.sshApi.connect(nextSessionId, payload)
-      if (!result.ok) {
-        if ('cancelled' in result && result.cancelled) return
-        const message = formatAppError(
-          { message: result.error },
-          t,
-          'errConnectFailed',
-        )
-        const runtime = sessionsRef.current.get(nextSessionId)
-        const tabNow = tabsRef.current.find((item) => item.key === tabKey)
-        if (
-          !tabNow ||
-          tabNow.sessionId !== nextSessionId ||
-          (runtime && runtime.connectToken !== connectToken)
-        ) {
-          return
-        }
-        if (runtime) {
-          runtime.wantConnected = false
-          runtime.autoReconnect = false
-        }
-        sessionsRef.current.delete(nextSessionId)
-        setTabs((prev) => prev.filter((tab) => tab.key !== tabKey))
-        if (activeTabKeyRef.current === tabKey) {
-          setActiveTabKey(
-            tabsRef.current.filter((tab) => tab.key !== tabKey).at(-1)?.key ??
-              null,
-          )
-        }
-        setError(message)
-        setBusy(false)
-        return
-      }
-      const runtime = sessionsRef.current.get(nextSessionId)
-      const tabNow = tabsRef.current.find((item) => item.key === tabKey)
-      if (
-        !runtime ||
-        runtime.connectToken !== connectToken ||
-        !tabNow ||
-        tabNow.sessionId !== nextSessionId
-      ) {
-        return
-      }
-      runtime.autoReconnect = true
-      runtime.wantConnected = true
-      runtime.protocol = result.protocol ?? runtime.protocol
-      setTabs((prev) =>
-        prev.map((tab) =>
-          tab.key === tabKey && tab.sessionId === nextSessionId
-            ? {
-                ...tab,
-                shellId: result.shellId ?? null,
-                status: 'connected',
-                title,
-                label,
-                connectionId: sourceDraft.id,
-                pending: false,
-              }
-            : tab,
-        ),
-      )
-      setBusy(false)
-
-      if (sourceDraft.id) {
-        const now = new Date().toISOString()
-        const protocol = result.protocol ?? 'sftp'
-        if (saved) {
-          const workspace = await window.sshApi.saveConnection({
-            ...saved,
-            protocol,
-            lastConnectedAt: now,
-            updatedAt: now,
-          })
-          applyWorkspace(workspace, setFolders, setConnections)
-        } else {
-          const workspace = await window.sshApi.touchConnection(sourceDraft.id)
-          applyWorkspace(workspace, setFolders, setConnections)
-        }
-      }
-    } catch (err) {
-      const message = formatAppError(err, t, 'errConnectFailed')
-      if (/connection cancelled/i.test(message)) return
-      const runtime = sessionsRef.current.get(nextSessionId)
-      const tabNow = tabsRef.current.find((item) => item.key === tabKey)
-      if (
-        !tabNow ||
-        tabNow.sessionId !== nextSessionId ||
-        (runtime && runtime.connectToken !== connectToken)
-      ) {
-        return
-      }
-      if (runtime) {
-        runtime.wantConnected = false
-        runtime.autoReconnect = false
-      }
-      sessionsRef.current.delete(nextSessionId)
-      setTabs((prev) => prev.filter((tab) => tab.key !== tabKey))
-      if (activeTabKeyRef.current === tabKey) {
-        setActiveTabKey(
-          tabsRef.current.filter((tab) => tab.key !== tabKey).at(-1)?.key ??
-            null,
-        )
-      }
-      setError(message)
-      setBusy(false)
-    }
-  }
-
-  const handleSidebarConnect = (connection: SavedConnection) => {
-    void handleConnect(toDraft(connection), { openNewTab: true })
-  }
-  const handleSidebarConnectRef = useRef(handleSidebarConnect)
-  handleSidebarConnectRef.current = handleSidebarConnect
-
-  const handleDisconnect = () => {
-    const tab = activeTab
-    if (!tab) return
-    stopSessionReconnect(tab.sessionId)
-    window.sshApi.disconnect(tab.sessionId, 'user')
-    sessionsRef.current.delete(tab.sessionId)
-    removeTabsForSession(tab.sessionId)
-    closeTreeIfUnpinned()
-    setPingMs(null)
-    setBusy(false)
-  }
-
-  const handleOpenShell = async () => {
-    const tab = activeTab
-    if (!tab || tab.status !== 'connected' || !tab.sessionId) return
-    if (openingShellRef.current) return
-
-    openingShellRef.current = true
-    setOpeningShell(true)
-
-    const tabKey = uuid()
-    const n = tabsRef.current.length + 1
-    const title = formatMessage(t('terminalTab'), { n })
-
-    const runtime = sessionsRef.current.get(tab.sessionId)
-    const label =
-      tab.label ||
-      runtime?.label ||
-      (runtime ? payloadLabel(runtime.payload) : tab.title)
-
-    setTabs((prev) => [
-      ...prev,
-      {
-        key: tabKey,
-        sessionId: tab.sessionId,
-        shellId: null,
-        title,
-        status: 'connected',
-        label,
-        connectionId: tab.connectionId,
-        pending: true,
-      },
-    ])
-    setActiveTabKey(tabKey)
-
-    try {
-      const runtime = sessionsRef.current.get(tab.sessionId)
-      if (runtime?.protocol !== 'ssh') return
-
-      const { shellId } = await window.sshApi.openShell(tab.sessionId)
-      setTabs((prev) =>
-        prev.map((item) =>
-          item.key === tabKey
-            ? { ...item, shellId, pending: false }
-            : item,
-        ),
-      )
-    } catch (err) {
-      setTabs((prev) => prev.filter((item) => item.key !== tabKey))
-      setActiveTabKey(tab.key)
-      setError(formatAppError(err, t, 'errConnectionFailed'))
-    } finally {
-      openingShellRef.current = false
-      setOpeningShell(false)
-    }
-  }
-
-  const handleCloseTab = (tabKey: string) => {
-    const tab = tabsRef.current.find((item) => item.key === tabKey)
-    if (!tab) return
-
-    const sessionTabs = tabsRef.current.filter(
-      (item) => item.sessionId === tab.sessionId,
-    )
-
-    if (sessionTabs.length <= 1) {
-      stopSessionReconnect(tab.sessionId)
-      window.sshApi.disconnect(tab.sessionId, 'user')
-      sessionsRef.current.delete(tab.sessionId)
-      removeTabsForSession(tab.sessionId)
-      setBusy(false)
-      return
-    }
-
-    if (tab.shellId) {
-      window.sshApi.closeShell(tab.sessionId, tab.shellId)
-    } else {
-      setTabs((prev) => prev.filter((item) => item.key !== tabKey))
-      if (activeTabKeyRef.current === tabKey) {
-        setActiveTabKey(
-          tabsRef.current.filter((item) => item.key !== tabKey).at(-1)?.key ??
-            null,
-        )
-      }
-    }
-  }
-
-  const pingLevel =
-    pingMs == null
-      ? 'unknown'
-      : pingMs < 80
-        ? 'good'
-        : pingMs < 180
-          ? 'fair'
-          : 'poor'
-
   const shellQuote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`
 
   const handleTreeNavigate = (remotePath: string) => {
-    if (
-      !activeTab?.sessionId ||
-      activeTab.status !== 'connected' ||
-      !activeTab.shellId
-    ) {
+    const tab = sessions.activeTab
+    if (!tab?.sessionId || tab.status !== 'connected' || !tab.shellId) {
       return
     }
     window.sshApi.write(
-      activeTab.sessionId,
+      tab.sessionId,
       `cd ${shellQuote(remotePath)}\n`,
-      activeTab.shellId,
+      tab.shellId,
     )
   }
 
-  const handleCreateFolder = async () => {
-    const now = new Date().toISOString()
-    const folder: ConnectionFolder = {
-      id: uuid(),
-      name: t('newFolderDefault'),
-      color: 'blue',
-      createdAt: now,
-      updatedAt: now,
-    }
-    const workspace = await window.sshApi.saveFolder(folder)
-    applyWorkspace(workspace, setFolders, setConnections)
-  }
-
-  const handleRenameFolder = async (folderId: string, name: string) => {
-    const current = folders.find((item) => item.id === folderId)
-    if (!current) return
-    const workspace = await window.sshApi.saveFolder({
-      ...current,
-      name,
-      updatedAt: new Date().toISOString(),
-    })
-    applyWorkspace(workspace, setFolders, setConnections)
-  }
-
-  const handleChangeFolderColor = async (
-    folderId: string,
-    color: FolderColor,
-  ) => {
-    const current = folders.find((item) => item.id === folderId)
-    if (!current) return
-    const workspace = await window.sshApi.saveFolder({
-      ...current,
-      color,
-      updatedAt: new Date().toISOString(),
-    })
-    applyWorkspace(workspace, setFolders, setConnections)
-  }
-
   const handleDeleteFolder = async (folderId: string) => {
-    const workspace = await window.sshApi.deleteFolder(folderId)
-    applyWorkspace(workspace, setFolders, setConnections)
+    await workspace.deleteFolder(folderId)
     if (draft.folderId === folderId) {
       setDraft((prev) => ({ ...prev, folderId: null }))
     }
@@ -1116,74 +200,20 @@ export default function App() {
     connectionId: string,
     folderId: string | null,
   ) => {
-    const current = connections.find((item) => item.id === connectionId)
-    if (!current) return
-    const workspace = await window.sshApi.saveConnection({
-      ...current,
-      folderId,
-      updatedAt: new Date().toISOString(),
-    })
-    applyWorkspace(workspace, setFolders, setConnections)
+    await workspace.moveConnection(connectionId, folderId)
     if (draft.id === connectionId) {
       setDraft((prev) => ({ ...prev, folderId }))
     }
   }
 
   useEffect(() => {
-    const root = document.documentElement
-    const syncChrome = (state: { maximized: boolean; fullscreen: boolean }) => {
-      root.classList.toggle(
-        'is-maximized',
-        state.maximized || state.fullscreen,
-      )
+    if (sessions.tabs.length > 0) {
+      preloadTerminalView()
     }
-    void window.sshApi.windowIsFullscreen().then((fullscreen) => {
-      syncChrome({ maximized: false, fullscreen })
-    })
-    return window.sshApi.onWindowState((state) => {
-      syncChrome(state)
-    })
-  }, [])
+  }, [sessions.tabs.length])
 
   useEffect(() => {
-    return window.sshApi.onWindowCloseRequest(() => {
-      const action = closeActionRef.current
-      if (action === 'tray') {
-        void window.sshApi.windowHideToTray()
-        return
-      }
-      if (action === 'quit') {
-        void window.sshApi.windowQuitApp()
-        return
-      }
-      setQuitPromptOpen(true)
-    })
-  }, [])
-
-  useEffect(() => {
-    if (!quitPromptOpen) return
-    const onKeyDown = (ev: KeyboardEvent) => {
-      if (ev.key === 'Escape') {
-        ev.preventDefault()
-        setQuitPromptOpen(false)
-      }
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [quitPromptOpen])
-
-  const hideToTray = () => {
-    setQuitPromptOpen(false)
-    void window.sshApi.windowHideToTray()
-  }
-
-  const quitApp = () => {
-    setQuitPromptOpen(false)
-    void window.sshApi.windowQuitApp()
-  }
-
-  useEffect(() => {
-    const sessions = tabs
+    const traySessions = sessions.tabs
       .filter(
         (tab) =>
           tab.status === 'connected' ||
@@ -1197,16 +227,15 @@ export default function App() {
         status: tab.status as 'connecting' | 'connected' | 'reconnecting',
         connectionId: tab.connectionId,
       }))
-      // Unique by session (multiple shells share one session).
       .filter(
         (tab, index, list) =>
           list.findIndex((item) => item.sessionId === tab.sessionId) === index,
       )
 
     void window.sshApi.trayReportState({
-      sessions,
-      connections: connections.map((item) => {
-        const folder = folders.find((entry) => entry.id === item.folderId)
+      sessions: traySessions,
+      connections: workspace.connections.map((item) => {
+        const folder = workspace.folders.find((entry) => entry.id === item.folderId)
         return {
           id: item.id,
           name: item.name,
@@ -1217,38 +246,17 @@ export default function App() {
         }
       }),
     })
-  }, [tabs, connections, folders])
+  }, [sessions.tabs, workspace.connections, workspace.folders])
 
-  useEffect(() => {
-    return window.sshApi.onTrayQuickConnect((connectionId) => {
-      const connection = connectionsRef.current.find(
-        (item) => item.id === connectionId,
-      )
-      if (!connection) return
-      handleSidebarConnectRef.current(connection)
-    })
-  }, [])
-
-  useEffect(() => {
-    return window.sshApi.onTrayDisconnect((sessionId) => {
-      stopSessionReconnect(sessionId)
-      window.sshApi.disconnect(sessionId, 'user')
-      sessionsRef.current.delete(sessionId)
-      removeTabsForSession(sessionId)
-      closeTreeIfUnpinned()
-      setPingMs(null)
-      setBusy(false)
-    })
-  }, [closeTreeIfUnpinned, removeTabsForSession, stopSessionReconnect])
-
-  const status = activeTab?.status ?? (tabs.length > 0 ? 'connected' : 'idle')
-  const reconnectAttempt = activeTab?.reconnectAttempt ?? 0
+  const status =
+    sessions.activeTab?.status ?? (sessions.tabs.length > 0 ? 'connected' : 'idle')
+  const reconnectAttempt = sessions.activeTab?.reconnectAttempt ?? 0
   const toolbarLabel =
-    (activeTab?.label && activeTab.label.trim()) ||
+    (sessions.activeTab?.label && sessions.activeTab.label.trim()) ||
     connectionLabelOf(draft) ||
     undefined
   const toolbarTitle =
-    (activeTab?.title && activeTab.title.trim()) ||
+    (sessions.activeTab?.title && sessions.activeTab.title.trim()) ||
     draft.name.trim() ||
     toolbarLabel ||
     t('untitledConnection')
@@ -1268,24 +276,44 @@ export default function App() {
               ? t('statusDisconnected')
               : t('statusError')
 
+  const pingLevel =
+    pingMs == null
+      ? 'unknown'
+      : pingMs < 80
+        ? 'good'
+        : pingMs < 180
+          ? 'fair'
+          : 'poor'
+
+  const canAddShell =
+    !!sessions.activeTab &&
+    sessions.activeTab.status === 'connected' &&
+    sessions.sessionsRef.current.get(sessions.activeTab.sessionId)?.protocol ===
+      'ssh'
+
+  const hasTerminalSessions = sessions.tabs.length > 0
+
   return (
     <div className="app">
       <TitleBar />
       <div className="app__main">
       <div className="layout">
         <Sidebar
-          folders={folders}
-          connections={connections}
+          folders={workspace.folders}
+          connections={workspace.connections}
           selectedId={selectedId}
           query={query}
           onQueryChange={setQuery}
           onSelect={handleSelect}
-          onConnect={handleSidebarConnect}
+          onConnect={(connection) => {
+            preloadTerminalView()
+            void sessions.handleSidebarConnect(connection)
+          }}
           onNew={handleNew}
-          onCreateFolder={() => void handleCreateFolder()}
-          onRenameFolder={(id, name) => void handleRenameFolder(id, name)}
+          onCreateFolder={() => void workspace.createFolder(t('newFolderDefault'))}
+          onRenameFolder={(id, name) => void workspace.renameFolder(id, name)}
           onChangeFolderColor={(id, color) =>
-            void handleChangeFolderColor(id, color)
+            void workspace.changeFolderColor(id, color)
           }
           onDeleteFolder={(id) => void handleDeleteFolder(id)}
           onMoveConnection={(id, folderId) =>
@@ -1373,7 +401,7 @@ export default function App() {
                 <button
                   type="button"
                   className="btn-icon"
-                  onClick={handleDisconnect}
+                  onClick={sessions.handleDisconnect}
                   title={t('disconnect')}
                   aria-label={t('disconnect')}
                 >
@@ -1412,345 +440,187 @@ export default function App() {
               className={`editor-pane${editOpen ? ' is-open' : ' is-closed'}`}
               aria-hidden={!editOpen}
             >
-              <ConnectionForm
-                draft={draft}
-                folders={folders}
-                busy={busy}
-                error={error}
-                onChange={setDraft}
-                onSave={() => void handleSave()}
-                onConnect={() => void handleConnect()}
-                onDelete={draft.id ? () => void handleDelete() : undefined}
-                onBrowseKey={() => void handleBrowseKey()}
-                onClose={() => setEditOpen(false)}
-              />
+              {editMounted ? (
+                <Suspense fallback={<ConnectionFormSkeleton />}>
+                  <ConnectionForm
+                    draft={draft}
+                    folders={workspace.folders}
+                    busy={busy}
+                    error={error}
+                    onChange={setDraft}
+                    onSave={() => void handleSave()}
+                    onConnect={() => {
+                      preloadTerminalView()
+                      void sessions.handleConnect(draft)
+                    }}
+                    onDelete={draft.id ? () => void handleDelete() : undefined}
+                    onBrowseKey={() => void handleBrowseKey()}
+                    onClose={() => setEditOpen(false)}
+                  />
+                </Suspense>
+              ) : null}
             </div>
             <div className="terminal-stack">
-              {tabs.length > 0 ? (
-                <div className="terminal-tabs" role="tablist">
-                  {tabs.map((tab) => (
-                    <div
-                      key={tab.key}
-                      className={`terminal-tab${
-                        tab.key === activeTabKey ? ' is-active' : ''
-                      }${renamingTabKey === tab.key ? ' is-renaming' : ''}${
-                        tab.pending ? ' is-pending' : ''
-                      }${draggingTabKey === tab.key ? ' is-dragging' : ''}${
-                        dragOverTabKey === tab.key ? ' is-drag-over' : ''
-                      }`}
-                      role="tab"
-                      aria-selected={tab.key === activeTabKey}
-                      draggable={renamingTabKey !== tab.key}
-                      onDragStart={(ev) => {
-                        if (renamingTabKey === tab.key) {
-                          ev.preventDefault()
-                          return
-                        }
-                        ev.dataTransfer.effectAllowed = 'move'
-                        ev.dataTransfer.setData('text/plain', tab.key)
-                        setDraggingTabKey(tab.key)
-                      }}
-                      onDragEnd={() => {
-                        setDraggingTabKey(null)
-                        setDragOverTabKey(null)
-                      }}
-                      onDragOver={(ev) => {
-                        if (!draggingTabKey || draggingTabKey === tab.key) return
-                        ev.preventDefault()
-                        ev.dataTransfer.dropEffect = 'move'
-                        setDragOverTabKey(tab.key)
-                      }}
-                      onDragLeave={(ev) => {
-                        if (
-                          ev.currentTarget.contains(ev.relatedTarget as Node)
-                        ) {
-                          return
-                        }
-                        if (dragOverTabKey === tab.key) {
-                          setDragOverTabKey(null)
-                        }
-                      }}
-                      onDrop={(ev) => {
-                        ev.preventDefault()
-                        const fromKey =
-                          ev.dataTransfer.getData('text/plain') || draggingTabKey
-                        if (!fromKey) return
-                        setTabs((prev) => reorderTabs(prev, fromKey, tab.key))
-                        setDraggingTabKey(null)
-                        setDragOverTabKey(null)
-                      }}
-                    >
-                      {renamingTabKey === tab.key ? (
-                        <input
-                          ref={renameInputRef}
-                          className="terminal-tab__rename"
-                          value={renameDraft}
-                          aria-label={t('terminalRenameTab')}
-                          onChange={(ev) => setRenameDraft(ev.target.value)}
-                          onClick={(ev) => ev.stopPropagation()}
-                          onBlur={() => commitRenameTab()}
-                          onKeyDown={(ev) => {
-                            if (ev.key === 'Enter') {
-                              ev.preventDefault()
-                              commitRenameTab()
-                            }
-                            if (ev.key === 'Escape') {
-                              ev.preventDefault()
-                              cancelRenameTab()
-                            }
-                          }}
-                        />
-                      ) : (
-                        <span
-                          className="terminal-tab__label"
-                          title={
-                            tab.label
-                              ? `${tab.title} — ${tab.label}`
-                              : t('terminalRenameTab')
-                          }
-                          onClick={() => activateTab(tab.key)}
-                          onDoubleClick={(ev) => {
-                            ev.preventDefault()
-                            beginRenameTab(tab.key, tab.title)
-                          }}
-                        >
-                          {tab.title}
-                          {tab.pending ? '…' : ''}
-                        </span>
-                      )}
-                      <button
-                        type="button"
-                        className="terminal-tab__close"
-                        title={t('terminalCloseTab')}
-                        aria-label={t('terminalCloseTab')}
-                        draggable={false}
-                        onMouseDown={(ev) => ev.stopPropagation()}
-                        onClick={(ev) => {
-                          ev.stopPropagation()
-                          if (renamingTabKey === tab.key) {
-                            cancelRenameTab()
-                          }
-                          handleCloseTab(tab.key)
-                        }}
-                      >
-                        ×
-                      </button>
-                    </div>
-                  ))}
-                  <button
-                    type="button"
-                    className="terminal-tab__add"
-                    title={t('terminalNewTab')}
-                    aria-label={t('terminalNewTab')}
-                    disabled={
-                      openingShell ||
-                      !activeTab ||
-                      activeTab.status !== 'connected' ||
-                      sessionsRef.current.get(activeTab?.sessionId ?? '')?.protocol !==
-                        'ssh'
-                    }
-                    onClick={() => void handleOpenShell()}
-                  >
-                    +
-                  </button>
-                </div>
-              ) : null}
+              <TerminalTabBar
+                tabs={sessions.tabs}
+                activeTabKey={sessions.activeTabKey}
+                openingShell={sessions.openingShell}
+                canAddShell={canAddShell}
+                t={t}
+                onActivate={sessions.activateTab}
+                onCloseTab={sessions.handleCloseTab}
+                onOpenShell={() => void sessions.handleOpenShell()}
+                onTabsChange={sessions.setTabs}
+              />
               <div className="terminal-stack__views">
-                {tabs.length === 0 ? (
-                  <TerminalView
-                    sessionId={null}
-                    shellId={null}
-                    status="idle"
-                    active
-                    connectionLabel={connectionLabelOf(draft)}
-                  />
+                {!hasTerminalSessions ? (
+                  <TerminalEmptyState connectionLabel={connectionLabelOf(draft)} />
                 ) : (
-                  tabs.map((tab) => (
-                    <TerminalView
-                      key={tab.key}
-                      sessionId={tab.sessionId}
-                      shellId={tab.shellId}
-                      status={tab.status}
-                      active={tab.key === activeTabKey}
-                      connectionLabel={tab.label}
-                      reconnectAttempt={tab.reconnectAttempt ?? 0}
-                    />
-                  ))
+                  <Suspense fallback={<TerminalSkeleton />}>
+                    {sessions.tabs.map((tab) => (
+                      <TerminalView
+                        key={tab.key}
+                        sessionId={tab.sessionId}
+                        shellId={tab.shellId}
+                        status={tab.status}
+                        active={tab.key === sessions.activeTabKey}
+                        connectionLabel={tab.label}
+                        reconnectAttempt={tab.reconnectAttempt ?? 0}
+                      />
+                    ))}
+                  </Suspense>
                 )}
               </div>
             </div>
           </div>
 
-          <FileTreePanel
-            open={treeOpen}
-            pinned={treePinned}
-            sessionId={
-              activeTab?.status === 'connected' ? activeTab.sessionId : null
-            }
-            onClose={() => setTreeOpen(false)}
-            onPinnedChange={handleTreePinnedChange}
-            onNavigate={handleTreeNavigate}
-          />
+          {treeMounted ? (
+            <Suspense
+              fallback={treeOpen || treePinned ? <FileTreeSkeleton /> : null}
+            >
+              <FileTreePanel
+                open={treeOpen}
+                pinned={treePinned}
+                sessionId={
+                  sessions.activeTab?.status === 'connected'
+                    ? sessions.activeTab.sessionId
+                    : null
+                }
+                onClose={() => setTreeOpen(false)}
+                onPinnedChange={handleTreePinnedChange}
+                onNavigate={handleTreeNavigate}
+              />
+            </Suspense>
+          ) : null}
           </div>
         </main>
       </div>
-      <TransferDock />
+      <Suspense fallback={null}>
+        <TransferDock />
+      </Suspense>
       </div>
 
-      <SettingsPanel
-        open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        onWorkspaceChange={(workspace) => {
-          applyWorkspace(workspace, setFolders, setConnections)
-        }}
-      />
+      {settingsMounted ? (
+        <Suspense fallback={settingsOpen ? <DrawerPanelSkeleton /> : null}>
+          <SettingsPanel
+            open={settingsOpen}
+            onClose={() => setSettingsOpen(false)}
+            onWorkspaceChange={workspace.apply}
+          />
+        </Suspense>
+      ) : null}
 
-      <HotkeysPanel
-        open={hotkeysOpen}
-        onClose={() => setHotkeysOpen(false)}
-      />
+      {hotkeysMounted ? (
+        <Suspense fallback={hotkeysOpen ? <DrawerPanelSkeleton /> : null}>
+          <HotkeysPanel
+            open={hotkeysOpen}
+            onClose={() => setHotkeysOpen(false)}
+          />
+        </Suspense>
+      ) : null}
 
-      <UpdatePrompt />
+      <Suspense fallback={null}>
+        <UpdatePrompt />
+      </Suspense>
 
-      {sameReconnectPrompt ? (
-        <div
-          className="update-modal-backdrop"
-          role="presentation"
-          onClick={() => {
-            sameReconnectResolverRef.current?.(false)
-            sameReconnectResolverRef.current = null
-            setSameReconnectPrompt(null)
-          }}
+      {sessions.sameReconnectPrompt ? (
+        <AppModal
+          titleId="reconnect-same-title"
+          descId="reconnect-same-desc"
+          title={t('reconnectSameTitle')}
+          message={formatMessage(t('reconnectSameMessage'), {
+            target: sessions.sameReconnectPrompt.target,
+          })}
+          onBackdrop={() => sessions.resolveSameReconnect(false)}
+          icon={
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+              <path
+                d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          }
         >
-          <div
-            className="update-modal"
-            role="alertdialog"
-            aria-modal="true"
-            aria-labelledby="reconnect-same-title"
-            aria-describedby="reconnect-same-desc"
-            onClick={(ev) => ev.stopPropagation()}
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => sessions.resolveSameReconnect(true)}
           >
-            <div className="update-modal__icon" aria-hidden>
-              <svg
-                width="18"
-                height="18"
-                viewBox="0 0 24 24"
-                fill="none"
-              >
-                <path
-                  d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            </div>
-            <div className="update-modal__body">
-              <h2 id="reconnect-same-title" className="update-modal__title">
-                {t('reconnectSameTitle')}
-              </h2>
-              <p id="reconnect-same-desc" className="update-modal__message">
-                {formatMessage(t('reconnectSameMessage'), {
-                  target: sameReconnectPrompt.target,
-                })}
-              </p>
-              <p className="update-modal__version" title={sameReconnectPrompt.target}>
-                {sameReconnectPrompt.target}
-              </p>
-            </div>
-            <div className="update-modal__actions">
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={() => {
-                  sameReconnectResolverRef.current?.(true)
-                  sameReconnectResolverRef.current = null
-                  setSameReconnectPrompt(null)
-                }}
-              >
-                {t('reconnectSameConfirm')}
-              </button>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => {
-                  sameReconnectResolverRef.current?.(false)
-                  sameReconnectResolverRef.current = null
-                  setSameReconnectPrompt(null)
-                }}
-              >
-                {t('cancel')}
-              </button>
-            </div>
-          </div>
-        </div>
+            {t('reconnectSameConfirm')}
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => sessions.resolveSameReconnect(false)}
+          >
+            {t('cancel')}
+          </button>
+        </AppModal>
       ) : null}
 
       {quitPromptOpen ? (
-        <div
-          className="update-modal-backdrop"
-          role="presentation"
-          onClick={() => setQuitPromptOpen(false)}
+        <AppModal
+          titleId="quit-prompt-title"
+          descId="quit-prompt-desc"
+          title={t('quitPromptTitle')}
+          message={t('quitPromptMessage')}
+          actionsClassName="update-modal__actions update-modal__actions--compact"
+          onBackdrop={() => setQuitPromptOpen(false)}
+          icon={
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+              <path
+                d="M9 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h3"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+              />
+              <path
+                d="M15 8l4 4-4 4M10 12h9"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          }
         >
-          <div
-            className="update-modal"
-            role="alertdialog"
-            aria-modal="true"
-            aria-labelledby="quit-prompt-title"
-            aria-describedby="quit-prompt-desc"
-            onClick={(ev) => ev.stopPropagation()}
+          <button type="button" className="btn btn-primary" onClick={hideToTray}>
+            {t('quitPromptTray')}
+          </button>
+          <button type="button" className="btn btn-danger" onClick={quitApp}>
+            {t('quitPromptQuit')}
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => setQuitPromptOpen(false)}
           >
-            <div className="update-modal__icon" aria-hidden>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-                <path
-                  d="M9 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h3"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                />
-                <path
-                  d="M15 8l4 4-4 4M10 12h9"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            </div>
-            <div className="update-modal__body">
-              <h2 id="quit-prompt-title" className="update-modal__title">
-                {t('quitPromptTitle')}
-              </h2>
-              <p id="quit-prompt-desc" className="update-modal__message">
-                {t('quitPromptMessage')}
-              </p>
-            </div>
-            <div className="update-modal__actions update-modal__actions--compact">
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={hideToTray}
-              >
-                {t('quitPromptTray')}
-              </button>
-              <button
-                type="button"
-                className="btn btn-danger"
-                onClick={quitApp}
-              >
-                {t('quitPromptQuit')}
-              </button>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => setQuitPromptOpen(false)}
-              >
-                {t('cancel')}
-              </button>
-            </div>
-          </div>
-        </div>
+            {t('cancel')}
+          </button>
+        </AppModal>
       ) : null}
     </div>
   )

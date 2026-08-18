@@ -7,6 +7,7 @@ import {
 } from '../hotkeys'
 import { useSettings } from '../i18n/SettingsContext'
 import type { MessageKey } from '../i18n/messages'
+import { formatMessage } from '../utils/formatMessage'
 import { HOTKEY_IDS, type HotkeyId } from '../types'
 
 type Props = {
@@ -20,16 +21,6 @@ const HOTKEY_LABELS: Record<HotkeyId, MessageKey> = {
   selectLine: 'hotkeySelectLine',
   interrupt: 'hotkeyInterrupt',
   suspend: 'hotkeySuspend',
-}
-
-function formatMessage(
-  template: string,
-  values: Record<string, string | number>,
-) {
-  return Object.entries(values).reduce(
-    (text, [key, value]) => text.replaceAll(`{${key}}`, String(value)),
-    template,
-  )
 }
 
 export function HotkeysPanel({ open, onClose }: Props) {

@@ -1,13 +1,32 @@
+import { lazy, Suspense } from 'react'
 import { createRoot } from 'react-dom/client'
-import App from './App'
 import { SettingsProvider } from './i18n/SettingsContext'
 import { bindWindowFx } from './windowFx'
-import './styles/global.css'
+import { AppSkeleton } from './components/skeleton/AppSkeleton'
+import { TitleBar } from './components/TitleBar'
+import './styles/fonts'
+import './styles/chrome.css'
+import './styles/app.css'
+
+const App = lazy(() => import('./App'))
 
 bindWindowFx()
 
+function MainShell() {
+  return (
+    <div className="app">
+      <TitleBar />
+      <div className="app__main">
+        <AppSkeleton />
+      </div>
+    </div>
+  )
+}
+
 createRoot(document.getElementById('root')!).render(
   <SettingsProvider>
-    <App />
+    <Suspense fallback={<MainShell />}>
+      <App />
+    </Suspense>
   </SettingsProvider>,
 )

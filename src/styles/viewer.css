@@ -1,0 +1,172 @@
+/* Image viewer window */
+
+.viewer-app {
+  height: 100%;
+}
+
+.viewer-shell {
+  position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-panel);
+  container-type: inline-size;
+  container-name: viewer;
+}
+
+.viewer-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-toolbar);
+}
+
+.viewer-toolbar__meta {
+  min-width: 0;
+  flex: 1 1 200px;
+}
+
+.viewer-toolbar__name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.viewer-toolbar__path {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.viewer-toolbar__dims {
+  margin-left: 10px;
+  color: var(--text-secondary);
+}
+
+.viewer-toolbar__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: 0 1 auto;
+  margin-left: auto;
+}
+
+@container viewer (max-width: 560px) {
+  .viewer-toolbar__actions {
+    flex-basis: 100%;
+    justify-content: center;
+    margin-left: 0;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+  }
+}
+
+.viewer-toolbar__scale {
+  min-width: 44px;
+  text-align: center;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+}
+
+.viewer-error {
+  position: sticky;
+  top: 10px;
+  z-index: 2;
+  margin: 10px 16px 0;
+}
+
+.viewer-body {
+  min-height: 0;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+  background:
+    linear-gradient(45deg, rgba(255, 255, 255, 0.03) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(255, 255, 255, 0.03) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(255, 255, 255, 0.03) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(255, 255, 255, 0.03) 75%);
+  background-size: 16px 16px;
+  background-position:
+    0 0,
+    0 8px,
+    8px -8px,
+    -8px 0;
+}
+
+html[data-theme='light'] .viewer-body {
+  background:
+    linear-gradient(45deg, rgba(0, 0, 0, 0.04) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(0, 0, 0, 0.04) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(0, 0, 0, 0.04) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(0, 0, 0, 0.04) 75%);
+  background-size: 16px 16px;
+  background-position:
+    0 0,
+    0 8px,
+    8px -8px,
+    -8px 0;
+}
+
+.viewer-loading {
+  display: grid;
+  place-items: center;
+  min-height: 240px;
+  padding: 40px 16px;
+}
+
+.viewer-body.is-panning {
+  cursor: grabbing;
+  user-select: none;
+}
+
+.viewer-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+  padding: 24px;
+}
+
+.viewer-pan {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  will-change: transform;
+}
+
+.viewer-image {
+  max-width: none;
+  max-height: none;
+  transform-origin: center center;
+  image-rendering: auto;
+  user-select: none;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  will-change: transform;
+}
+
+.viewer-image.is-svg {
+  box-shadow: none;
+}
+
+.viewer-image.is-animated {
+  transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.file-tree__file-icon--archive {
+  color: #fbbf24;
+}

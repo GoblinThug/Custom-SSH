@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useSettings } from '../i18n/SettingsContext'
+import { formatMessage } from '../utils/formatMessage'
 import { ChevronIcon } from './ChevronIcon'
 import { ProgressBar } from './ProgressBar'
 
@@ -22,16 +23,6 @@ type TransferBatch = {
   files: TransferFile[]
   currentPath?: string
   finished: boolean
-}
-
-function formatMessage(
-  template: string,
-  values: Record<string, string | number>,
-) {
-  return Object.entries(values).reduce(
-    (text, [key, value]) => text.replaceAll(`{${key}}`, String(value)),
-    template,
-  )
 }
 
 function basename(remotePath: string): string {

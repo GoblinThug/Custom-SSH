@@ -4,30 +4,14 @@ import { ProgressBar } from './components/ProgressBar'
 import { useSettings } from './i18n/SettingsContext'
 import { formatBytes } from './imageFiles'
 import { formatAppError } from './utils/formatAppError'
+import { formatMessage } from './utils/formatMessage'
+import { readWindowQuery } from './utils/windowQuery'
 
 type ArchiveEntry = {
   path: string
   name: string
   isDir: boolean
   size: number
-}
-
-function readQuery() {
-  const params = new URLSearchParams(window.location.search)
-  return {
-    sessionId: params.get('sessionId') ?? '',
-    remotePath: params.get('path') ?? '',
-  }
-}
-
-function formatMessage(
-  template: string,
-  values: Record<string, string | number>,
-) {
-  return Object.entries(values).reduce(
-    (text, [key, value]) => text.replaceAll(`{${key}}`, String(value)),
-    template,
-  )
 }
 
 function parentOf(entryPath: string): string {
@@ -82,7 +66,7 @@ function FileGlyph() {
 
 export function ArchiveApp() {
   const { t } = useSettings()
-  const { sessionId, remotePath } = useMemo(() => readQuery(), [])
+  const { sessionId, remotePath } = useMemo(() => readWindowQuery(), [])
   const fileName = useMemo(
     () => remotePath.split('/').filter(Boolean).pop() || t('archiveRoot'),
     [remotePath, t],

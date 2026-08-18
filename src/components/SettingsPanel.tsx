@@ -3,6 +3,7 @@ import { APP_LOCALES } from '../i18n/locales'
 import { useSettings } from '../i18n/SettingsContext'
 import type { AppLocale, AppTheme, CloseAction, Workspace } from '../types'
 import { formatAppError } from '../utils/formatAppError'
+import { formatMessage } from '../utils/formatMessage'
 import { SelectDropdown } from './SelectDropdown'
 
 const GITHUB_URL = 'https://github.com/GoblinThug/Custom-SSH'
@@ -41,16 +42,6 @@ type Props = {
   open: boolean
   onClose: () => void
   onWorkspaceChange?: (workspace: Workspace) => void
-}
-
-function formatMessage(
-  template: string,
-  values: Record<string, string | number>,
-) {
-  return Object.entries(values).reduce(
-    (text, [key, value]) => text.replaceAll(`{${key}}`, String(value)),
-    template,
-  )
 }
 
 export function SettingsPanel({ open, onClose, onWorkspaceChange }: Props) {
