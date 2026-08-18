@@ -3,6 +3,7 @@ import type {
   AppSettings,
   AppTheme,
   ConnectPayload,
+  ConnectionProtocol,
   ConnectionFolder,
   RemoteFsEntry,
   SavedConnection,
@@ -130,8 +131,25 @@ const api = {
   connect: (
     sessionId: string,
     payload: ConnectPayload,
-  ): Promise<{ ok: boolean; shellId: string }> =>
-    ipcRenderer.invoke('ssh:connect', sessionId, payload),
+  ): Promise<
+    | {
+        ok: true
+        shellId: string | null
+        protocol: ConnectionProtocol
+      }
+    | {
+        ok: false
+        cancelled: true
+        shellId: null
+        protocol: ConnectionProtocol
+      }
+    | {
+        ok: false
+        error: string
+        shellId: null
+        protocol: ConnectionProtocol
+      }
+  > => ipcRenderer.invoke('ssh:connect', sessionId, payload),
   openShell: (
     sessionId: string,
     size?: { cols?: number; rows?: number },
@@ -252,11 +270,65 @@ const api = {
       ipcRenderer.removeListener('fs:upload-progress', listener)
     }
   },
+  onFsRemoteChanged: (
+    callback: (payload: { sessionId: string; remoteDir: string }) => void,
+  ) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      payload: { sessionId: string; remoteDir: string },
+    ) => callback(payload)
+    ipcRenderer.on('fs:remote-changed', listener)
+    return () => {
+      ipcRenderer.removeListener('fs:remote-changed', listener)
+    }
+  },
   openEditorWindow: (
     sessionId: string,
     remotePath: string,
   ): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('editor:open', sessionId, remotePath),
+  openViewerWindow: (
+    sessionId: string,
+    remotePath: string,
+  ): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('viewer:open', sessionId, remotePath),
+  openArchiveWindow: (
+    sessionId: string,
+    remotePath: string,
+  ): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('archive:open', sessionId, remotePath),
+  archiveList: (
+    sessionId: string,
+    remotePath: string,
+  ): Promise<{
+    name: string
+    size: number
+    entries: Array<{
+      path: string
+      name: string
+      isDir: boolean
+      size: number
+    }>
+  }> => ipcRenderer.invoke('archive:list', sessionId, remotePath),
+  archiveExtract: (
+    sessionId: string,
+    remotePath: string,
+    paths: string[] | null,
+  ): Promise<
+    | { ok: true; cancelled: false; count: number; dest: string }
+    | { ok: false; cancelled: true; count: number }
+  > => ipcRenderer.invoke('archive:extract', sessionId, remotePath, paths),
+  archiveOpenEntry: (
+    sessionId: string,
+    remotePath: string,
+    entryPath: string,
+  ): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('archive:openEntry', sessionId, remotePath, entryPath),
+  fsReadBinary: (
+    sessionId: string,
+    remotePath: string,
+  ): Promise<{ base64: string; size: number; mimeType: string }> =>
+    ipcRenderer.invoke('fs:readBinary', sessionId, remotePath),
   showFileActionsMenu: (payload: {
     items: Array<{ id: string; label: string }>
   }): Promise<string | null> => ipcRenderer.invoke('menu:fileActions', payload),
@@ -281,6 +353,12 @@ const api = {
   windowMinimize: () => ipcRenderer.invoke('window:minimize'),
   windowFullscreenToggle: () =>
     ipcRenderer.invoke('window:fullscreenToggle') as Promise<boolean>,
+  windowRestoreForDrag: (cursorX: number, cursorY: number) =>
+    ipcRenderer.invoke('window:restoreForDrag', cursorX, cursorY) as Promise<boolean>,
+  windowDragTo: (cursorX: number, cursorY: number) => {
+    ipcRenderer.send('window:dragTo', cursorX, cursorY)
+  },
+  windowEndDrag: () => ipcRenderer.invoke('window:endDrag'),
   windowClose: () => ipcRenderer.invoke('window:close'),
   windowForceClose: () => ipcRenderer.invoke('window:forceClose'),
   windowHideToTray: () => ipcRenderer.invoke('window:hideToTray'),
@@ -405,6 +483,20 @@ const api = {
     ipcRenderer.on('editor:close-request', listener)
     return () => {
       ipcRenderer.removeListener('editor:close-request', listener)
+    }
+  },
+  onViewerCloseRequest: (callback: () => void) => {
+    const listener = () => callback()
+    ipcRenderer.on('viewer:close-request', listener)
+    return () => {
+      ipcRenderer.removeListener('viewer:close-request', listener)
+    }
+  },
+  onArchiveCloseRequest: (callback: () => void) => {
+    const listener = () => callback()
+    ipcRenderer.on('archive:close-request', listener)
+    return () => {
+      ipcRenderer.removeListener('archive:close-request', listener)
     }
   },
   onWindowCloseRequest: (callback: () => void) => {

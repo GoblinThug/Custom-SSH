@@ -182,6 +182,7 @@ export function importTermiusJson(
       password,
       privateKeyPath: keyPath,
       folderId,
+      protocol: 'ssh',
       createdAt: now,
       updatedAt: now,
     })

@@ -18,6 +18,7 @@ import {
   type ConnectPayload,
   type ConnectionDraft,
   type ConnectionFolder,
+  type ConnectionProtocol,
   type FolderColor,
   type SavedConnection,
   type SessionStatus,
@@ -39,6 +40,7 @@ type TerminalTab = {
 
 type SessionRuntime = {
   payload: ConnectPayload
+  protocol: ConnectionProtocol
   wantConnected: boolean
   autoReconnect: boolean
   suppressReconnect: boolean
@@ -47,6 +49,8 @@ type SessionRuntime = {
   pingFail: number
   label: string
   connectionId?: string
+  /** Guards against stale connect() promises updating the wrong tab. */
+  connectToken: number
 }
 
 const TREE_PIN_KEY = 'customssh.fileTreePinned'
@@ -134,6 +138,24 @@ function payloadLabel(payload: ConnectPayload) {
   return `${payload.username || 'user'}@${payload.host}:${payload.port || 22}`
 }
 
+function inferProtocolFromDraft(
+  draft: ConnectionDraft,
+  saved?: SavedConnection,
+): ConnectionProtocol {
+  const host = draft.host.trim().toLowerCase()
+  if (host.startsWith('ftp://')) return 'ftp'
+  if (host.startsWith('sftp://')) return 'sftp'
+  if (host.startsWith('ssh://')) return 'ssh'
+
+  if (draft.port === 21) return 'ftp'
+  if (draft.port === 2022) return 'sftp'
+  if (draft.port === 22) return 'ssh'
+
+  if (saved?.protocol) return saved.protocol
+  if (draft.authMethod === 'privateKey') return 'ssh'
+  return 'ssh'
+}
+
 function reorderTabs(
   list: TerminalTab[],
   fromKey: string,
@@ -183,6 +205,7 @@ export default function App() {
   const tabsRef = useRef<TerminalTab[]>([])
   const activeTabKeyRef = useRef<string | null>(null)
   const sessionsRef = useRef<Map<string, SessionRuntime>>(new Map())
+  const connectTokenRef = useRef(0)
   const themeRef = useRef(theme)
   const tRef = useRef(t)
   const openingShellRef = useRef(false)
@@ -320,11 +343,19 @@ export default function App() {
         void window.sshApi
           .connect(sessionId, {
             ...runtime.payload,
+            protocolHint: runtime.protocol,
             theme: themeRef.current,
           })
           .then((result) => {
+            if (!result.ok) {
+              if ('cancelled' in result && result.cancelled) return
+              if (!runtime.wantConnected || !runtime.autoReconnect) return
+              scheduleReconnect(sessionId)
+              return
+            }
             runtime.autoReconnect = true
-            const shellId = result?.shellId ?? null
+            const shellId = result.shellId ?? null
+            runtime.protocol = result.protocol ?? runtime.protocol
             setTabs((prev) => {
               const sessionTabs = prev.filter((tab) => tab.sessionId === sessionId)
               const keepKey = sessionTabs[0]?.key
@@ -495,27 +526,40 @@ export default function App() {
       return
     }
 
+    const runtime = sessionsRef.current.get(sessionId)
+    if (!runtime) {
+      setPingMs(null)
+      return
+    }
+
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | undefined
 
     const tick = async () => {
-      const runtime = sessionsRef.current.get(sessionId)
-      if (!runtime) return
+      const current = sessionsRef.current.get(sessionId)
+      if (!current) return
       try {
         const ms = await window.sshApi.ping(sessionId)
         if (cancelled) return
-        runtime.pingFail = 0
+        current.pingFail = 0
         setPingMs(ms)
-      } catch {
+      } catch (err) {
         if (cancelled) return
         setPingMs(null)
-        runtime.pingFail += 1
+        const message =
+          err instanceof Error ? err.message : String(err ?? '')
+        const looksDead =
+          /connection (lost|closed|reset)|no response|session not found|ping timeout|econnreset|socket hang up|unable to exec/i.test(
+            message,
+          )
+        if (!looksDead) return
+        current.pingFail += 1
         if (
-          runtime.pingFail >= 2 &&
-          runtime.wantConnected &&
-          runtime.autoReconnect
+          current.pingFail >= 2 &&
+          current.wantConnected &&
+          current.autoReconnect
         ) {
-          runtime.pingFail = 0
+          current.pingFail = 0
           window.sshApi.disconnect(sessionId, 'drop')
           return
         }
@@ -535,12 +579,12 @@ export default function App() {
   }, [activeTab?.sessionId, activeTab?.status])
 
   useEffect(() => {
-    for (const tab of tabs) {
+    for (const tab of tabsRef.current) {
       if (tab.status === 'connected' && tab.sessionId) {
         window.sshApi.applyTheme(tab.sessionId, theme)
       }
     }
-  }, [theme, tabs])
+  }, [theme])
 
   const activateTab = (tabKey: string) => {
     setActiveTabKey(tabKey)
@@ -603,6 +647,7 @@ export default function App() {
       port: draft.port,
       username: draft.username.trim(),
       authMethod: draft.authMethod,
+      protocol: inferProtocolFromDraft(draft, saved),
       password:
         draft.authMethod === 'password'
           ? draft.password || saved?.password
@@ -674,7 +719,11 @@ export default function App() {
     return tab.label === payloadLabel(payload)
   }
 
-  const handleConnect = async (sourceDraft: ConnectionDraft = draft) => {
+  const handleConnect = async (
+    sourceDraft: ConnectionDraft = draft,
+    opts?: { openNewTab?: boolean },
+  ) => {
+    const openNewTab = !!opts?.openNewTab
     const saved = connections.find((item) => item.id === sourceDraft.id)
     const validationError = validate(sourceDraft, saved)
     if (validationError) {
@@ -696,6 +745,7 @@ export default function App() {
       cols: 120,
       rows: 30,
       theme,
+      protocolHint: saved?.protocol ?? inferProtocolFromDraft(sourceDraft, saved),
     }
     const label = payloadLabel(payload)
     const title = sourceDraft.name.trim() || label
@@ -717,10 +767,11 @@ export default function App() {
     setPingMs(null)
 
     const nextSessionId = uuid()
-    // Reconnect only the active tab; keep every other tab as-is.
-    const replaceSessionId = current?.sessionId
-    const replaceShellId = current?.shellId
-    const tabKey = current?.key ?? uuid()
+    // By default we replace the active tab. For "connect from sidebar"
+    // we create a new tab so existing SFTP sessions keep running.
+    const replaceSessionId = openNewTab ? undefined : current?.sessionId
+    const replaceShellId = openNewTab ? undefined : current?.shellId
+    const tabKey = openNewTab ? uuid() : current?.key ?? uuid()
 
     const siblingCount = replaceSessionId
       ? tabsRef.current.filter(
@@ -729,8 +780,10 @@ export default function App() {
         ).length
       : 0
 
+    const connectToken = ++connectTokenRef.current
     sessionsRef.current.set(nextSessionId, {
       payload,
+      protocol: 'sftp',
       wantConnected: true,
       autoReconnect: false,
       suppressReconnect: false,
@@ -738,6 +791,7 @@ export default function App() {
       pingFail: 0,
       label,
       connectionId: sourceDraft.id,
+      connectToken,
     })
 
     const nextTab: TerminalTab = {
@@ -754,7 +808,7 @@ export default function App() {
     // Move the active tab to the new session first so shell-closed events from
     // the old connection cannot remove it (or other tabs).
     setTabs((prev) => {
-      if (!current) return [...prev, nextTab]
+      if (!current || openNewTab) return [...prev, nextTab]
       return prev.map((tab) => (tab.key === tabKey ? nextTab : tab))
     })
     setActiveTabKey(tabKey)
@@ -776,17 +830,57 @@ export default function App() {
 
     try {
       const result = await window.sshApi.connect(nextSessionId, payload)
-      const runtime = sessionsRef.current.get(nextSessionId)
-      if (runtime) {
-        runtime.autoReconnect = true
-        runtime.wantConnected = true
+      if (!result.ok) {
+        if ('cancelled' in result && result.cancelled) return
+        const message = formatAppError(
+          { message: result.error },
+          t,
+          'errConnectFailed',
+        )
+        const runtime = sessionsRef.current.get(nextSessionId)
+        const tabNow = tabsRef.current.find((item) => item.key === tabKey)
+        if (
+          !tabNow ||
+          tabNow.sessionId !== nextSessionId ||
+          (runtime && runtime.connectToken !== connectToken)
+        ) {
+          return
+        }
+        if (runtime) {
+          runtime.wantConnected = false
+          runtime.autoReconnect = false
+        }
+        sessionsRef.current.delete(nextSessionId)
+        setTabs((prev) => prev.filter((tab) => tab.key !== tabKey))
+        if (activeTabKeyRef.current === tabKey) {
+          setActiveTabKey(
+            tabsRef.current.filter((tab) => tab.key !== tabKey).at(-1)?.key ??
+              null,
+          )
+        }
+        setError(message)
+        setBusy(false)
+        return
       }
+      const runtime = sessionsRef.current.get(nextSessionId)
+      const tabNow = tabsRef.current.find((item) => item.key === tabKey)
+      if (
+        !runtime ||
+        runtime.connectToken !== connectToken ||
+        !tabNow ||
+        tabNow.sessionId !== nextSessionId
+      ) {
+        return
+      }
+      runtime.autoReconnect = true
+      runtime.wantConnected = true
+      runtime.protocol = result.protocol ?? runtime.protocol
       setTabs((prev) =>
         prev.map((tab) =>
-          tab.key === tabKey
+          tab.key === tabKey && tab.sessionId === nextSessionId
             ? {
                 ...tab,
-                shellId: result?.shellId ?? null,
+                shellId: result.shellId ?? null,
                 status: 'connected',
                 title,
                 label,
@@ -796,13 +890,36 @@ export default function App() {
             : tab,
         ),
       )
+      setBusy(false)
 
       if (sourceDraft.id) {
-        const workspace = await window.sshApi.touchConnection(sourceDraft.id)
-        applyWorkspace(workspace, setFolders, setConnections)
+        const now = new Date().toISOString()
+        const protocol = result.protocol ?? 'sftp'
+        if (saved) {
+          const workspace = await window.sshApi.saveConnection({
+            ...saved,
+            protocol,
+            lastConnectedAt: now,
+            updatedAt: now,
+          })
+          applyWorkspace(workspace, setFolders, setConnections)
+        } else {
+          const workspace = await window.sshApi.touchConnection(sourceDraft.id)
+          applyWorkspace(workspace, setFolders, setConnections)
+        }
       }
     } catch (err) {
+      const message = formatAppError(err, t, 'errConnectFailed')
+      if (/connection cancelled/i.test(message)) return
       const runtime = sessionsRef.current.get(nextSessionId)
+      const tabNow = tabsRef.current.find((item) => item.key === tabKey)
+      if (
+        !tabNow ||
+        tabNow.sessionId !== nextSessionId ||
+        (runtime && runtime.connectToken !== connectToken)
+      ) {
+        return
+      }
       if (runtime) {
         runtime.wantConnected = false
         runtime.autoReconnect = false
@@ -815,14 +932,13 @@ export default function App() {
             null,
         )
       }
-      const message = formatAppError(err, t, 'errConnectFailed')
       setError(message)
       setBusy(false)
     }
   }
 
   const handleSidebarConnect = (connection: SavedConnection) => {
-    void handleConnect(toDraft(connection))
+    void handleConnect(toDraft(connection), { openNewTab: true })
   }
   const handleSidebarConnectRef = useRef(handleSidebarConnect)
   handleSidebarConnectRef.current = handleSidebarConnect
@@ -873,6 +989,9 @@ export default function App() {
     setActiveTabKey(tabKey)
 
     try {
+      const runtime = sessionsRef.current.get(tab.sessionId)
+      if (runtime?.protocol !== 'ssh') return
+
       const { shellId } = await window.sshApi.openShell(tab.sessionId)
       setTabs((prev) =>
         prev.map((item) =>
@@ -1426,7 +1545,9 @@ export default function App() {
                     disabled={
                       openingShell ||
                       !activeTab ||
-                      activeTab.status !== 'connected'
+                      activeTab.status !== 'connected' ||
+                      sessionsRef.current.get(activeTab?.sessionId ?? '')?.protocol !==
+                        'ssh'
                     }
                     onClick={() => void handleOpenShell()}
                   >

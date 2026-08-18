@@ -142,6 +142,7 @@ export function importWinScpIni(
       password: authMethod === 'password' ? password || undefined : undefined,
       privateKeyPath: keyPath || undefined,
       folderId,
+      protocol: 'ssh',
       createdAt: now,
       updatedAt: now,
     })

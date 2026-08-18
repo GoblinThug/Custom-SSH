@@ -95,9 +95,35 @@ export function Sidebar({
           setMenuConnectionId((id) => (id === item.id ? null : item.id))
         }}
       >
-        <div className="connection-item__name">{item.name}</div>
+        <div className="connection-item__name">
+          {(() => {
+            const protocol = item.protocol ?? (item.port === 21 ? 'ftp' : 'ssh')
+            const label =
+              protocol === 'ssh'
+                ? t('protocolSsh')
+                : protocol === 'sftp'
+                  ? t('protocolSftp')
+                  : t('protocolFtp')
+            return (
+              <span
+                className={`protocol-badge protocol-badge--${protocol}`}
+                title={label}
+                aria-label={label}
+              >
+                {label}
+              </span>
+            )
+          })()}
+          <span className="connection-item__name-text">
+            <span className="connection-item__name-marquee">{item.name}</span>
+          </span>
+        </div>
         <div className="connection-item__meta">
-          {item.username}@{item.host}:{item.port}
+          <span className="connection-meta__text">
+            <span className="connection-meta__marquee">
+              {item.username}@{item.host}:{item.port}
+            </span>
+          </span>
         </div>
       </button>
       <button

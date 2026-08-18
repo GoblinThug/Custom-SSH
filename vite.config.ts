@@ -15,6 +15,8 @@ export default defineConfig({
       input: {
         main: path.resolve(__dirname, 'index.html'),
         editor: path.resolve(__dirname, 'editor.html'),
+        viewer: path.resolve(__dirname, 'viewer.html'),
+        archive: path.resolve(__dirname, 'archive.html'),
         tray: path.resolve(__dirname, 'tray.html'),
       },
     },
@@ -28,7 +30,7 @@ export default defineConfig({
           build: {
             outDir: 'dist-electron',
             rollupOptions: {
-              external: ['ssh2', 'electron-updater'],
+              external: ['ssh2', 'electron-updater', 'node-unrar-js'],
             },
           },
         },

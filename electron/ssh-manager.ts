@@ -1,10 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { Readable, Writable } from 'node:stream'
+import { Client as FtpClient } from 'basic-ftp'
 import { Client, type ClientChannel, type SFTPWrapper } from 'ssh2'
 import type { BrowserWindow } from 'electron'
 import type {
   AppTheme,
+  ConnectionProtocol,
   ConnectPayload,
   RemoteFsEntry,
   TransferFileInfo,
@@ -21,6 +24,22 @@ export class TransferCancelledError extends Error {
   }
 }
 
+export class ConnectCancelledError extends Error {
+  readonly cancelled = true
+
+  constructor() {
+    super('Connection cancelled')
+    this.name = 'ConnectCancelledError'
+  }
+}
+
+export function isConnectCancelled(err: unknown): boolean {
+  return (
+    err instanceof ConnectCancelledError ||
+    (err instanceof Error && err.message === 'Connection cancelled')
+  )
+}
+
 function isTransferCancelledError(err: unknown): boolean {
   return (
     err instanceof TransferCancelledError ||
@@ -32,7 +51,69 @@ type ActiveTransfer = {
   cancelled: Set<string>
   currentKey: string | null
   abortCurrent: (() => void) | null
+  aborts: Map<string, () => void>
   files: TransferFileInfo[]
+}
+
+/** Parallel SFTP file transfers per session. */
+const TRANSFER_CONCURRENCY = 4
+/** Parallel directory walks while building transfer job lists. */
+const COLLECT_CONCURRENCY = 8
+/** Throttle progress IPC to avoid main↔renderer overhead. */
+const PROGRESS_EMIT_MS = 150
+/** Larger read/write chunks for high-latency links. */
+const STREAM_HIGH_WATER_MARK = 256 * 1024
+
+async function mapPool<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) return []
+  const results = new Array<R>(items.length)
+  let nextIndex = 0
+  const worker = async () => {
+    while (true) {
+      const index = nextIndex
+      nextIndex += 1
+      if (index >= items.length) return
+      results[index] = await fn(items[index], index)
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, () => worker()),
+  )
+  return results
+}
+
+function createThrottledProgressEmitter(
+  onProgress: ((progress: TransferProgress) => void) | undefined,
+  snapshot: () => TransferProgress,
+) {
+  let lastEmit = 0
+  let timer: ReturnType<typeof setTimeout> | undefined
+
+  const flush = () => {
+    if (timer) {
+      clearTimeout(timer)
+      timer = undefined
+    }
+    lastEmit = Date.now()
+    onProgress?.(snapshot())
+  }
+
+  const emit = (force = false) => {
+    if (!onProgress) return
+    const now = Date.now()
+    if (force || now - lastEmit >= PROGRESS_EMIT_MS) {
+      flush()
+      return
+    }
+    if (timer) return
+    timer = setTimeout(flush, PROGRESS_EMIT_MS - (now - lastEmit))
+  }
+
+  return { emit, flush }
 }
 
 type ShellState = {
@@ -47,12 +128,24 @@ type Session = {
   client: Client
   shells: Map<string, ShellState>
   sftp: SFTPWrapper | null
+  ftp: FtpClient | null
+  ftpConfig:
+    | {
+        host: string
+        port: number
+        username: string
+        password: string
+      }
+    | null
   cwd: string
   theme: AppTheme
+  protocol: ConnectionProtocol
   /** Prevents duplicate status events when socket/stream both close. */
   closed: boolean
   /** Set before intentional hangup so UI won't auto-reconnect. */
   disconnectReason: 'user' | 'drop'
+  /** Rejects an in-flight connect() when the session is cancelled. */
+  connectAbort?: () => void
 }
 
 const CWD_OSC_RE = /\x1b\]7337;cwd;([^\x07\x1b]*)(?:\x07|\x1b\\)/g
@@ -142,6 +235,16 @@ function remotePartPath(remotePath: string): string {
   return `${remotePath}${TRANSFER_PART_SUFFIX}`
 }
 
+function mimeTypeForImagePath(remotePath: string): string {
+  const lower = remotePath.toLowerCase()
+  if (lower.endsWith('.png')) return 'image/png'
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg'
+  if (lower.endsWith('.webp')) return 'image/webp'
+  if (lower.endsWith('.svg')) return 'image/svg+xml'
+  if (lower.endsWith('.gif')) return 'image/gif'
+  return 'application/octet-stream'
+}
+
 function isTransientTransferError(err: unknown): boolean {
   if (!err) return false
   const code =
@@ -172,6 +275,17 @@ function stripAndCaptureCwd(text: string, session: Session): string {
     if (cwd) session.cwd = cwd
     return ''
   })
+}
+
+/** Drop leaked internal bootstrap lines if they reach the UI. */
+function stripBootstrapNoise(text: string): string {
+  if (!text) return text
+  return text
+    .replace(
+      /[^\n\r]*stty -echo 2>\/dev\/null;\s*export LS_COLORS=[^\n\r]*[\n\r]?/g,
+      '',
+    )
+    .replace(/[^\n\r]*history -d "\$HISTCMD"[^\n\r]*[\n\r]?/g, '')
 }
 
 function shellQuote(value: string): string {
@@ -262,51 +376,195 @@ export class SshManager {
     if (batch.currentKey === fileKey) {
       batch.abortCurrent?.()
     }
+    batch.aborts.get(fileKey)?.()
     return true
   }
 
   connect(
     sessionId: string,
     payload: ConnectPayload,
-  ): Promise<{ shellId: string }> {
+  ): Promise<{ shellId: string | null; protocol: ConnectionProtocol }> {
     // Replacing a session is intentional — do not treat as a network drop.
     this.disconnect(sessionId, 'user')
 
     return new Promise((resolve, reject) => {
       const theme: AppTheme = payload.theme === 'light' ? 'light' : 'dark'
+      if (payload.port === 21) {
+        const ftp = new FtpClient()
+        ftp.ftp.verbose = false
+        const client = new Client()
+        const session: Session = {
+          client,
+          shells: new Map(),
+          sftp: null,
+          ftp,
+          ftpConfig: {
+            host: payload.host,
+            port: payload.port,
+            username: payload.username,
+            password: payload.password ?? '',
+          },
+          cwd: '/',
+          theme,
+          protocol: 'ftp',
+          closed: false,
+          disconnectReason: 'drop',
+        }
+        this.sessions.set(sessionId, session)
+
+        ;(async () => {
+          try {
+            if (payload.authMethod !== 'password') {
+              throw new Error('FTP requires password authentication')
+            }
+            await ftp.access({
+              host: payload.host,
+              port: payload.port,
+              user: payload.username,
+              password: payload.password ?? '',
+            })
+            this.send(sessionId, 'ssh:status', { status: 'connected' })
+            resolve({ shellId: null, protocol: 'ftp' })
+          } catch (err) {
+            const error = err instanceof Error ? err : new Error(String(err))
+            this.finishSession(sessionId, {
+              status: 'error',
+              message: error.message,
+            })
+            try {
+              ftp.close()
+            } catch {
+              // ignore
+            }
+            reject(error)
+          }
+        })()
+        return
+      }
+
+      let ptyProbeInProgress = false
+      let settled = false
       const client = new Client()
       const session: Session = {
         client,
         shells: new Map(),
         sftp: null,
+        ftp: null,
+        ftpConfig: null,
         cwd: '/',
         theme,
+        protocol: 'sftp',
         closed: false,
         disconnectReason: 'drop',
       }
       this.sessions.set(sessionId, session)
 
+      const abortConnect = () => {
+        if (settled) return
+        settled = true
+        if (timeoutId) clearTimeout(timeoutId)
+        reject(new ConnectCancelledError())
+      }
+      session.connectAbort = abortConnect
+
+      const clearAndMarkSettled = () => {
+        settled = true
+        if (timeoutId) clearTimeout(timeoutId)
+        session.connectAbort = undefined
+      }
+
+      let timeoutId: NodeJS.Timeout | undefined
+
+      ;(
+        client as unknown as {
+          on: (
+            event: string,
+            listener: (...args: unknown[]) => void,
+          ) => Client
+        }
+      ).on(
+        'keyboard-interactive',
+        (...args: unknown[]) => {
+          const prompts = (args[3] as Array<{ prompt: string; echo: boolean }>) ?? []
+          const finish =
+            (args[4] as ((responses: string[]) => void) | undefined) ??
+            (() => undefined)
+          if (payload.authMethod !== 'password') {
+            finish([])
+            return
+          }
+          const pass = payload.password ?? ''
+          // Some SFTP providers authenticate via keyboard-interactive
+          // while still asking for a single password prompt.
+          finish(prompts.map(() => pass))
+        },
+      )
+
       client
         .on('ready', () => {
-          void this.spawnShell(sessionId, {
-            cols: payload.cols ?? 120,
-            rows: payload.rows ?? 30,
-            theme,
-            primary: true,
-          })
-            .then((shellId) => {
+          if (settled) return
+          if (timeoutId) clearTimeout(timeoutId)
+          ;(async () => {
+            try {
+              const withTimeout = <T,>(
+                p: Promise<T>,
+                ms: number,
+                timeoutMessage: string,
+              ): Promise<T> =>
+                new Promise((resolve, reject) => {
+                  const t = setTimeout(() => {
+                    reject(new Error(timeoutMessage))
+                  }, ms)
+                  p.then(
+                    (value) => {
+                      clearTimeout(t)
+                      resolve(value)
+                    },
+                    (err) => {
+                      clearTimeout(t)
+                      reject(err)
+                    },
+                  )
+                })
+
+              const result = await this.finalizeConnection(
+                sessionId,
+                session,
+                payload,
+                theme,
+                { get: () => ptyProbeInProgress, set: (v) => { ptyProbeInProgress = v } },
+                withTimeout,
+              )
+
+              if (session.closed || settled) return
+
+              session.protocol = result.protocol
               this.send(sessionId, 'ssh:status', { status: 'connected' })
-              resolve({ shellId })
-            })
-            .catch((err: Error) => {
+              clearAndMarkSettled()
+              resolve(result)
+            } catch (err) {
+              if (session.closed || settled) return
+              const error = err instanceof Error ? err : new Error(String(err))
+              clearAndMarkSettled()
               this.finishSession(sessionId, {
                 status: 'error',
-                message: err.message,
+                message: error.message,
               })
-              reject(err)
-            })
+              reject(error)
+            }
+          })()
         })
         .on('error', (err) => {
+          if (settled) return
+          // When PTY is denied, `ssh2` may emit an error even though the
+          // underlying connection for SFTP might still be fine.
+          if (
+            ptyProbeInProgress &&
+            /pseudo-terminal|ECONNRESET/i.test(err?.message ?? '')
+          ) {
+            return
+          }
+          clearAndMarkSettled()
           this.finishSession(sessionId, {
             status: 'error',
             message: err.message,
@@ -315,16 +573,26 @@ export class SshManager {
           reject(err)
         })
         .on('close', () => {
+          if (settled) return
+          clearAndMarkSettled()
+          const message = 'Connection closed by remote host'
           this.finishSession(sessionId, {
-            status: 'disconnected',
+            status: 'error',
+            message,
             reason: session.disconnectReason,
           })
+          reject(new Error(message))
         })
         .on('end', () => {
+          if (settled) return
+          clearAndMarkSettled()
+          const message = 'Connection closed by remote host'
           this.finishSession(sessionId, {
-            status: 'disconnected',
+            status: 'error',
+            message,
             reason: session.disconnectReason,
           })
+          reject(new Error(message))
         })
 
       const config: Record<string, unknown> = {
@@ -339,6 +607,8 @@ export class SshManager {
 
       if (payload.authMethod === 'password') {
         config.password = payload.password ?? ''
+        config.tryKeyboard = true
+        config.preferredAuthentications = ['password', 'keyboard-interactive']
       } else {
         if (!payload.privateKeyPath) {
           reject(new Error('Private key path is required'))
@@ -351,7 +621,166 @@ export class SshManager {
       }
 
       this.send(sessionId, 'ssh:status', { status: 'connecting' })
+
+      // Safety net: avoid "connecting forever" if ssh2 neither emits
+      // `ready` nor `error` for some reason.
+      timeoutId = setTimeout(() => {
+        if (settled) return
+        settled = true
+        session.connectAbort = undefined
+        this.finishSession(sessionId, {
+          status: 'error',
+          message: 'Connection timed out',
+          reason: session.disconnectReason,
+        })
+        try {
+          client.end()
+        } catch {
+          // ignore
+        }
+        reject(new Error('Connection timed out'))
+      }, 45_000)
       client.connect(config as Parameters<Client['connect']>[0])
+    })
+  }
+
+  /**
+   * After SSH `ready`: open SFTP/shell channels and pick protocol.
+   * Uses protocolHint to skip slow probes on repeat connects.
+   */
+  private async finalizeConnection(
+    sessionId: string,
+    session: Session,
+    payload: ConnectPayload,
+    theme: AppTheme,
+    ptyProbe: { get: () => boolean; set: (value: boolean) => void },
+    withTimeout: <T>(
+      p: Promise<T>,
+      ms: number,
+      timeoutMessage: string,
+    ) => Promise<T>,
+  ): Promise<{ shellId: string | null; protocol: ConnectionProtocol }> {
+    const hint = payload.protocolHint
+    const shellSize = {
+      cols: payload.cols ?? 120,
+      rows: payload.rows ?? 30,
+    }
+
+    const openSftp = async (): Promise<boolean> => {
+      try {
+        await withTimeout(
+          this.getSftp(session),
+          8000,
+          'Failed to open SFTP channel',
+        )
+        return true
+      } catch {
+        session.sftp = null
+        return false
+      }
+    }
+
+    const openPrimaryShell = async (): Promise<string> => {
+      ptyProbe.set(true)
+      try {
+        return await withTimeout(
+          this.spawnShell(sessionId, {
+            ...shellSize,
+            theme,
+            primary: true,
+          }),
+          8000,
+          'Failed to open shell',
+        )
+      } finally {
+        ptyProbe.set(false)
+      }
+    }
+
+    // Fast path: workspace already knows this host is SFTP-only.
+    if (hint === 'sftp') {
+      const sftpOk = await openSftp()
+      if (!sftpOk) {
+        throw new Error('Failed to open SFTP channel')
+      }
+      return { shellId: null, protocol: 'sftp' }
+    }
+
+    // Fast path: skip throwaway shell probe; open the real shell directly.
+    if (hint === 'ssh') {
+      try {
+        const shellId = await openPrimaryShell()
+        void openSftp()
+        return { shellId, protocol: 'ssh' }
+      } catch {
+        const sftpOk = await openSftp()
+        if (!sftpOk) {
+          throw new Error('Neither SSH shell nor SFTP channel is available')
+        }
+        return { shellId: null, protocol: 'sftp' }
+      }
+    }
+
+    // Unknown protocol: open SFTP first, then probe shell (sequential — some
+    // SFTP-only hosts reset the socket when shell is opened in parallel).
+    const sftpOk = await openSftp()
+    const shellAllowed = await this.probeShell(sessionId, theme)
+
+    if (shellAllowed) {
+      try {
+        const shellId = await openPrimaryShell()
+        return { shellId, protocol: 'ssh' }
+      } catch {
+        if (!sftpOk) {
+          throw new Error('Neither SSH shell nor SFTP channel is available')
+        }
+        return { shellId: null, protocol: 'sftp' }
+      }
+    }
+
+    if (!sftpOk) {
+      throw new Error('Neither SSH shell nor SFTP channel is available')
+    }
+    return { shellId: null, protocol: 'sftp' }
+  }
+
+  /**
+   * Probe whether the remote allows opening an interactive shell.
+   * We do not prime/execute anything here, so it won't create remote
+   * history noise.
+   */
+  private probeShell(sessionId: string, theme: AppTheme): Promise<boolean> {
+    const session = this.sessions.get(sessionId)
+    if (!session || session.closed) return Promise.resolve(false)
+
+    return new Promise((resolve) => {
+      let done = false
+      const finish = (value: boolean) => {
+        if (done) return
+        done = true
+        resolve(value)
+      }
+
+      session.client.shell(
+        { term: 'xterm-256color', cols: 40, rows: 5 },
+        { env: colorEnv(theme) },
+        (err, stream) => {
+          if (err || !stream) {
+            finish(false)
+            return
+          }
+          try {
+            stream.close()
+          } catch {
+            // ignore
+          }
+          finish(true)
+        },
+      )
+
+      // Shell open can be slow on some shared hosts or when auth completes late.
+      // If we timeout too early, we incorrectly classify the server as SFTP-only.
+      setTimeout(() => finish(false), 6500)
     })
   }
 
@@ -393,6 +822,14 @@ export class SshManager {
 
   /** Quietly refresh LS_COLORS when the UI theme changes mid-session. */
   applyTheme(sessionId: string, theme: AppTheme, shellId?: string) {
+    void this.applyThemeQuiet(sessionId, theme, shellId)
+  }
+
+  private async applyThemeQuiet(
+    sessionId: string,
+    theme: AppTheme,
+    shellId?: string,
+  ) {
     const session = this.sessions.get(sessionId)
     if (!session) return
     const next = theme === 'light' ? 'light' : 'dark'
@@ -401,21 +838,27 @@ export class SshManager {
       ? [session.shells.get(shellId)].filter(Boolean)
       : Array.from(session.shells.values())
     const colors = shellQuote(lsColorsForTheme(next))
-    // Leading space + delete this line from history after it runs (bash).
-    const cmd =
-      ' stty -echo 2>/dev/null;' +
-      ` export LS_COLORS=${colors};` +
-      ' stty echo 2>/dev/null;' +
-      ' history -d "$HISTCMD" 2>/dev/null || true\n'
 
     for (const shell of targets) {
       if (!shell?.inputEnabled) continue
-      shell.theme = next
+      if (shell.theme === next) continue
+
       shell.outputEnabled = false
-      shell.stream.write(cmd)
-      setTimeout(() => {
+      try {
+        shell.stream.write(UNIX_HISTORY_OFF)
+        await this.waitForPrompt(shell.stream, 350)
+        shell.stream.write(
+          ` : __cssh_boot; export LS_COLORS=${colors}; stty echo 2>/dev/null\n`,
+        )
+        await this.waitForPrompt(shell.stream, 350)
+        shell.stream.write('printf "\\033c"\n')
+        await delay(40)
+        shell.theme = next
+      } catch {
+        // ignore — shell may have closed
+      } finally {
         shell.outputEnabled = true
-      }, 180)
+      }
     }
   }
 
@@ -432,8 +875,15 @@ export class SshManager {
     const session = this.sessions.get(sessionId)
     if (!session || session.closed) return
     session.disconnectReason = reason
+    session.connectAbort?.()
+    session.connectAbort = undefined
     try {
       session.sftp?.end()
+      try {
+        session.ftp?.close()
+      } catch {
+        // ignore
+      }
       for (const shell of session.shells.values()) {
         shell.stream.close()
       }
@@ -489,7 +939,9 @@ export class SshManager {
           session.shells.set(shellId, shell)
 
           const forward = (data: Buffer) => {
-            const cleaned = stripAndCaptureCwd(data.toString('utf8'), session)
+            const cleaned = stripBootstrapNoise(
+              stripAndCaptureCwd(data.toString('utf8'), session),
+            )
             if (!shell.outputEnabled || !cleaned) return
             this.send(sessionId, 'ssh:data', {
               shellId,
@@ -545,12 +997,22 @@ export class SshManager {
     })
   }
 
-  /** Round-trip latency via a lightweight remote `true` exec. */
+  /** Round-trip latency via a lightweight remote check. */
   async ping(sessionId: string): Promise<number> {
     const session = this.sessions.get(sessionId)
     if (!session) throw new Error('Session not found')
 
     const started = Date.now()
+
+    if (session.protocol === 'ftp') {
+      await this.getFtp(session)
+      return Math.max(1, Date.now() - started)
+    }
+
+    if (session.protocol === 'sftp') {
+      return this.sftpPing(session, started)
+    }
+
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         reject(new Error('Ping timeout'))
@@ -559,6 +1021,11 @@ export class SshManager {
       session.client.exec('true', (err, stream) => {
         if (err || !stream) {
           clearTimeout(timeout)
+          const message = err instanceof Error ? err.message : String(err ?? '')
+          if (/unable to exec/i.test(message)) {
+            void this.sftpPing(session, started).then(resolve, reject)
+            return
+          }
           reject(err ?? new Error('Ping failed'))
           return
         }
@@ -584,6 +1051,16 @@ export class SshManager {
     const session = this.sessions.get(sessionId)
     if (!session) throw new Error('Session not found')
     if (session.cwd) return session.cwd
+    if (session.protocol === 'ftp') {
+      const ftp = await this.getFtp(session)
+      session.cwd = await ftp.pwd().catch(() => '/')
+      return session.cwd
+    }
+    if (session.protocol === 'sftp') {
+      session.cwd = await this.sftpGetCwd(session)
+      return session.cwd
+    }
+
     session.cwd = await this.execPwd(session)
     return session.cwd
   }
@@ -591,37 +1068,62 @@ export class SshManager {
   async listDir(sessionId: string, remotePath: string): Promise<RemoteFsEntry[]> {
     const session = this.sessions.get(sessionId)
     if (!session) throw new Error('Session not found')
-    const sftp = await this.getSftp(session)
-    const target = remotePath || '/'
 
-    return new Promise((resolve, reject) => {
-      sftp.readdir(target, (err, list) => {
-        if (err) {
-          reject(err)
-          return
-        }
-        const entries = list
-          .filter(
-            (item) =>
-              item.filename !== '.' &&
-              item.filename !== '..' &&
-              !isTransferPartName(item.filename),
-          )
-          .map((item) => {
-            const isDir = (item.attrs.mode & 0o170000) === 0o040000
-            return {
-              name: item.filename,
-              path: joinRemote(target, item.filename),
-              isDir,
-            } satisfies RemoteFsEntry
-          })
-          .sort((a, b) => {
-            if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
-            return a.name.localeCompare(b.name)
-          })
-        resolve(entries)
-      })
-    })
+    if (session.protocol === 'ftp') {
+      const ftp = await this.getFtp(session)
+      const target = remotePath || '/'
+      const list = await ftp.list(target)
+      return list
+        .filter(
+          (item) =>
+            item.name !== '.' &&
+            item.name !== '..' &&
+            !isTransferPartName(item.name),
+        )
+        .map((item) => ({
+          name: item.name,
+          path: joinRemote(target, item.name),
+          isDir: item.isDirectory,
+          size: item.isDirectory ? undefined : item.size,
+        }))
+        .sort((a, b) => {
+          if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
+          return a.name.localeCompare(b.name)
+        })
+    }
+
+    const target = remotePath || '/'
+    return this.withSftp(session, (sftp) =>
+      new Promise((resolve, reject) => {
+        sftp.readdir(target, (err, list) => {
+          if (err) {
+            reject(err)
+            return
+          }
+          const entries = list
+            .filter(
+              (item) =>
+                item.filename !== '.' &&
+                item.filename !== '..' &&
+                !isTransferPartName(item.filename),
+            )
+            .map((item) => {
+              const isDir = (item.attrs.mode & 0o170000) === 0o040000
+              return {
+                name: item.filename,
+                path: joinRemote(target, item.filename),
+                isDir,
+                size: isDir ? undefined : item.attrs.size,
+              } satisfies RemoteFsEntry
+            })
+            .sort((a, b) => {
+              if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
+              return a.name.localeCompare(b.name)
+            })
+          resolve(entries)
+        })
+      }),
+    )
   }
 
   async readFile(
@@ -631,6 +1133,28 @@ export class SshManager {
   ): Promise<{ content: string; size: number }> {
     const session = this.sessions.get(sessionId)
     if (!session) throw new Error('Session not found')
+
+    if (session.protocol === 'ftp') {
+      const ftp = await this.getFtp(session)
+      const bufParts: Buffer[] = []
+      const writable = new Writable({
+        write: (chunk, _enc, cb) => {
+          bufParts.push(Buffer.from(chunk))
+          cb()
+        },
+      })
+
+      await ftp.downloadTo(writable, remotePath)
+      const buf = Buffer.concat(bufParts)
+      if (buf.length > maxBytes) {
+        throw new Error(
+          `File is too large to edit (${Math.ceil(buf.length / 1024 / 1024)} MB)`,
+        )
+      }
+      if (buf.includes(0)) throw new Error('Binary files cannot be edited')
+      return { content: buf.toString('utf8'), size: buf.length }
+    }
+
     const sftp = await this.getSftp(session)
 
     return new Promise((resolve, reject) => {
@@ -668,6 +1192,76 @@ export class SshManager {
     })
   }
 
+  async remoteFileSize(sessionId: string, remotePath: string): Promise<number> {
+    const stats = await this.statRemote(sessionId, remotePath)
+    return stats.size
+  }
+
+  /** Read a remote file as base64 (images and other binary). */
+  async readBinaryFile(
+    sessionId: string,
+    remotePath: string,
+    maxBytes = 25 * 1024 * 1024,
+  ): Promise<{ base64: string; size: number; mimeType: string }> {
+    const session = this.sessions.get(sessionId)
+    if (!session) throw new Error('Session not found')
+
+    const mimeType = mimeTypeForImagePath(remotePath)
+
+    if (session.protocol === 'ftp') {
+      const ftp = await this.getFtp(session)
+      const bufParts: Buffer[] = []
+      const writable = new Writable({
+        write: (chunk, _enc, cb) => {
+          bufParts.push(Buffer.from(chunk))
+          cb()
+        },
+      })
+      await ftp.downloadTo(writable, remotePath)
+      const buf = Buffer.concat(bufParts)
+      if (buf.length > maxBytes) {
+        throw new Error(
+          `File is too large to preview (${Math.ceil(buf.length / 1024 / 1024)} MB)`,
+        )
+      }
+      return { base64: buf.toString('base64'), size: buf.length, mimeType }
+    }
+
+    const sftp = await this.getSftp(session)
+    return new Promise((resolve, reject) => {
+      sftp.stat(remotePath, (statErr, stats) => {
+        if (statErr) {
+          reject(statErr)
+          return
+        }
+        if ((stats.mode & 0o170000) === 0o040000) {
+          reject(new Error('Path is a directory'))
+          return
+        }
+        if (stats.size > maxBytes) {
+          reject(
+            new Error(
+              `File is too large to preview (${Math.ceil(stats.size / 1024 / 1024)} MB)`,
+            ),
+          )
+          return
+        }
+        sftp.readFile(remotePath, (err, data) => {
+          if (err) {
+            reject(err)
+            return
+          }
+          const buf = Buffer.isBuffer(data) ? data : Buffer.from(data)
+          resolve({
+            base64: buf.toString('base64'),
+            size: buf.length,
+            mimeType,
+          })
+        })
+      })
+    })
+  }
+
   async writeFile(
     sessionId: string,
     remotePath: string,
@@ -675,6 +1269,22 @@ export class SshManager {
   ): Promise<void> {
     const session = this.sessions.get(sessionId)
     if (!session) throw new Error('Session not found')
+
+    if (session.protocol === 'ftp') {
+      const ftp = await this.getFtp(session)
+      // Ensure parent directories exist.
+      const parent =
+        remotePath.includes('/')
+          ? remotePath.slice(0, remotePath.lastIndexOf('/')) || '/'
+          : '/'
+      if (parent && parent !== '/') {
+        await ftp.ensureDir(parent)
+      }
+      const stream = Readable.from([content])
+      await ftp.uploadFrom(stream, remotePath)
+      return
+    }
+
     const sftp = await this.getSftp(session)
 
     return new Promise((resolve, reject) => {
@@ -701,6 +1311,85 @@ export class SshManager {
       if (control?.isCancelled()) {
         throw new TransferCancelledError(control.key)
       }
+    }
+
+    const session = this.sessions.get(sessionId)
+    if (!session) throw new Error('Session not found')
+
+    if (session.protocol === 'ftp') {
+      await new Promise<void>(async (resolve, reject) => {
+        let cancelled = false
+        let ftp: FtpClient | null = null
+
+        const cleanup = () => {
+          try {
+            ftp?.trackProgress()
+          } catch {
+            // ignore
+          }
+        }
+
+        try {
+          ftp = await this.getFtp(session)
+
+          const total = await ftp
+            .size(remotePath)
+            .catch(() => 0 /* dir or unknown size */)
+
+          let transferred = 0
+          ftp.trackProgress((info) => {
+            if (control?.isCancelled()) {
+              cancelled = true
+              try {
+                ftp?.close()
+              } catch {
+                // ignore
+              }
+              session.ftp = null
+              return
+            }
+            // `info.bytes` is the bytes transferred in the current transfer.
+            transferred = info.bytes
+            onBytes?.(transferred, total || 0)
+          })
+
+          control?.registerAbort(() => {
+            cancelled = true
+            try {
+              ftp?.close()
+            } catch {
+              // ignore
+            }
+            session.ftp = null
+          })
+
+          throwIfCancelled()
+          const parent = path.dirname(localPath)
+          if (!fs.existsSync(parent)) fs.mkdirSync(parent, { recursive: true })
+          await ftp.downloadTo(localPath, remotePath)
+          control?.clearAbort()
+          cleanup()
+          if (cancelled) {
+            reject(new TransferCancelledError(control?.key ?? 'download'))
+            return
+          }
+          onBytes?.(total || transferred, total || transferred)
+          resolve()
+        } catch (err) {
+          try {
+            control?.clearAbort()
+          } catch {
+            // ignore
+          }
+          cleanup()
+          if (control?.isCancelled() || cancelled) {
+            reject(new TransferCancelledError(control?.key ?? 'download'))
+            return
+          }
+          reject(err instanceof Error ? err : new Error(String(err)))
+        }
+      })
+      return
     }
 
     await this.withTransferRetry(sessionId, async () => {
@@ -743,9 +1432,11 @@ export class SshManager {
         const readStream = sftp.createReadStream(remotePath, {
           start: offset,
           end: total > 0 ? total - 1 : 0,
+          highWaterMark: STREAM_HIGH_WATER_MARK,
         })
         const writeStream = fs.createWriteStream(partPath, {
           flags: offset > 0 ? 'a' : 'w',
+          highWaterMark: STREAM_HIGH_WATER_MARK,
         })
 
         const fail = (err: unknown) => {
@@ -807,8 +1498,7 @@ export class SshManager {
   async isDirectory(sessionId: string, remotePath: string): Promise<boolean> {
     const session = this.sessions.get(sessionId)
     if (!session) throw new Error('Session not found')
-    const sftp = await this.getSftp(session)
-    const stats = await this.statPath(sftp, remotePath)
+    const stats = await this.statRemote(sessionId, remotePath)
     return (stats.mode & 0o170000) === 0o040000
   }
 
@@ -830,17 +1520,10 @@ export class SshManager {
     items: Array<{ remotePath: string; localPath: string }>,
     onProgress?: (progress: TransferProgress) => void,
   ): Promise<{ saved: number; cancelled: number }> {
-    const jobs: Array<{ remotePath: string; localPath: string; size: number }> =
-      []
-    for (const item of items) {
-      jobs.push(
-        ...(await this.collectDownloadJobs(
-          sessionId,
-          item.remotePath,
-          item.localPath,
-        )),
-      )
-    }
+    const nested = await mapPool(items, COLLECT_CONCURRENCY, (item) =>
+      this.collectDownloadJobs(sessionId, item.remotePath, item.localPath),
+    )
+    const jobs = nested.flat()
     return this.runDownloadJobs(sessionId, jobs, onProgress)
   }
 
@@ -849,6 +1532,51 @@ export class SshManager {
     jobs: Array<{ remotePath: string; localPath: string; size: number }>,
     onProgress?: (progress: TransferProgress) => void,
     existingTransferId?: string,
+  ): Promise<{ saved: number; cancelled: number }> {
+    return this.runTransferJobs(
+      sessionId,
+      jobs,
+      onProgress,
+      existingTransferId,
+      async (job, key, batch, onBytes, control) => {
+        const parent = path.dirname(job.localPath)
+        if (!fs.existsSync(parent)) fs.mkdirSync(parent, { recursive: true })
+        await this.downloadFile(
+          sessionId,
+          job.remotePath,
+          job.localPath,
+          onBytes,
+          control,
+        )
+      },
+      (job) => {
+        this.cleanupLocalPart(job.localPath)
+      },
+    )
+  }
+
+  private async runTransferJobs(
+    sessionId: string,
+    jobs: Array<{ remotePath: string; localPath: string; size: number }>,
+    onProgress: ((progress: TransferProgress) => void) | undefined,
+    existingTransferId: string | undefined,
+    transferFile: (
+      job: { remotePath: string; localPath: string; size: number },
+      key: string,
+      batch: ActiveTransfer,
+      onBytes: (transferred: number, total: number) => void,
+      control: {
+        key: string
+        isCancelled: () => boolean
+        registerAbort: (abort: () => void) => void
+        clearAbort: () => void
+      },
+    ) => Promise<void>,
+    cleanupFailed: (job: {
+      remotePath: string
+      localPath: string
+      size: number
+    }) => void | Promise<void>,
   ): Promise<{ saved: number; cancelled: number }> {
     const transferId = existingTransferId ?? randomUUID()
     const files: TransferFileInfo[] = jobs.map((job, index) => ({
@@ -860,100 +1588,132 @@ export class SshManager {
       cancelled: new Set(),
       currentKey: null,
       abortCurrent: null,
+      aborts: new Map(),
       files,
     }
     this.transfers.set(transferId, batch)
 
     const filesTotal = jobs.length
     const totalBytes = jobs.reduce((sum, job) => sum + Math.max(job.size, 1), 0)
-    let transferredBytes = 0
-    let filesDone = 0
-    let filesCancelled = 0
+    const fileProgress = new Map<string, number>()
+    let lastActivePath: string | undefined
 
-    const emit = (currentPath?: string, fileTransferred = 0, fileTotal = 0) => {
-      const currentContribution =
-        fileTotal > 0 ? Math.min(fileTransferred, fileTotal) : 0
-      const overall = Math.min(
-        totalBytes,
-        transferredBytes + currentContribution,
-      )
-      onProgress?.({
+    const countFiles = () => ({
+      done: files.filter((item) => item.status === 'done').length,
+      cancelled: files.filter(
+        (item) => item.status === 'cancelled' || item.status === 'error',
+      ).length,
+    })
+
+    const completedBytes = () => {
+      let sum = 0
+      for (let i = 0; i < jobs.length; i += 1) {
+        const status = files[i].status
+        if (
+          status === 'done' ||
+          status === 'cancelled' ||
+          status === 'error'
+        ) {
+          sum += Math.max(jobs[i].size, 1)
+        }
+      }
+      return sum
+    }
+
+    const progress = createThrottledProgressEmitter(onProgress, () => {
+      let activeBytes = 0
+      for (const bytes of fileProgress.values()) {
+        activeBytes += bytes
+      }
+      const overall = Math.min(totalBytes, completedBytes() + activeBytes)
+      const { done, cancelled } = countFiles()
+      return {
         transferId,
         percent:
           totalBytes > 0 ? Math.min(100, (overall / totalBytes) * 100) : 0,
         transferred: overall,
         total: totalBytes,
-        currentPath,
-        filesDone,
+        currentPath: lastActivePath,
+        filesDone: done,
         filesTotal,
-        filesCancelled,
+        filesCancelled: cancelled,
         files: files.map((item) => ({ ...item })),
-      })
+      }
+    })
+
+    const processJob = async (index: number): Promise<void> => {
+      const job = jobs[index]
+      const key = files[index].key
+
+      if (batch.cancelled.has(key) || files[index].status === 'cancelled') {
+        files[index].status = 'cancelled'
+        progress.emit(true)
+        return
+      }
+
+      files[index].status = 'active'
+      batch.currentKey = key
+      lastActivePath = job.remotePath
+      fileProgress.set(key, 0)
+      progress.emit(true)
+
+      try {
+        await transferFile(
+          job,
+          key,
+          batch,
+          (fileTransferred, fileTotal) => {
+            fileProgress.set(
+              key,
+              Math.min(fileTransferred, fileTotal || job.size),
+            )
+            lastActivePath = job.remotePath
+            progress.emit()
+          },
+          {
+            key,
+            isCancelled: () => batch.cancelled.has(key),
+            registerAbort: (abort) => {
+              batch.abortCurrent = abort
+              batch.aborts.set(key, abort)
+            },
+            clearAbort: () => {
+              batch.aborts.delete(key)
+              if (batch.currentKey === key) {
+                batch.currentKey = null
+                batch.abortCurrent = null
+              }
+            },
+          },
+        )
+        files[index].status = 'done'
+      } catch (err) {
+        if (isTransferCancelledError(err)) {
+          files[index].status = 'cancelled'
+          await cleanupFailed(job)
+        } else {
+          const message =
+            err instanceof Error ? err.message : String(err ?? 'Transfer failed')
+          files[index].status = 'error'
+          files[index].error = message
+          await cleanupFailed(job)
+        }
+      } finally {
+        fileProgress.delete(key)
+        progress.emit(true)
+      }
     }
 
     try {
-      emit()
-      for (let index = 0; index < jobs.length; index += 1) {
-        const job = jobs[index]
-        const key = files[index].key
-        if (batch.cancelled.has(key) || files[index].status === 'cancelled') {
-          files[index].status = 'cancelled'
-          filesCancelled += 1
-          transferredBytes += Math.max(job.size, 1)
-          emit()
-          continue
-        }
-
-        const parent = path.dirname(job.localPath)
-        if (!fs.existsSync(parent)) fs.mkdirSync(parent, { recursive: true })
-        files[index].status = 'active'
-        batch.currentKey = key
-        emit(job.remotePath, 0, job.size)
-
-        try {
-          await this.downloadFile(
-            sessionId,
-            job.remotePath,
-            job.localPath,
-            (fileTransferred, fileTotal) => {
-              emit(job.remotePath, fileTransferred, fileTotal || job.size)
-            },
-            {
-              key,
-              isCancelled: () => batch.cancelled.has(key),
-              registerAbort: (abort) => {
-                batch.abortCurrent = abort
-              },
-              clearAbort: () => {
-                if (batch.currentKey === key) batch.abortCurrent = null
-              },
-            },
-          )
-          files[index].status = 'done'
-          filesDone += 1
-        } catch (err) {
-          if (isTransferCancelledError(err)) {
-            files[index].status = 'cancelled'
-            filesCancelled += 1
-            this.cleanupLocalPart(job.localPath)
-          } else {
-            const message =
-              err instanceof Error ? err.message : String(err ?? 'Transfer failed')
-            files[index].status = 'error'
-            files[index].error = message
-            // Count toward completion so the dock does not hang on a sticky active file.
-            filesCancelled += 1
-            this.cleanupLocalPart(job.localPath)
-          }
-        } finally {
-          batch.currentKey = null
-          batch.abortCurrent = null
-        }
-
-        transferredBytes += Math.max(job.size, 1)
-        emit(job.remotePath, job.size, job.size)
-      }
-      return { saved: filesDone, cancelled: filesCancelled }
+      progress.emit(true)
+      await mapPool(
+        jobs.map((_, index) => index),
+        TRANSFER_CONCURRENCY,
+        processJob,
+      )
+      progress.flush()
+      const { done, cancelled } = countFiles()
+      return { saved: done, cancelled }
     } finally {
       this.transfers.delete(transferId)
     }
@@ -966,8 +1726,7 @@ export class SshManager {
   ): Promise<Array<{ remotePath: string; localPath: string; size: number }>> {
     const session = this.sessions.get(sessionId)
     if (!session) throw new Error('Session not found')
-    const sftp = await this.getSftp(session)
-    const stats = await this.statPath(sftp, remotePath)
+    const stats = await this.statRemote(sessionId, remotePath)
     const isDir = (stats.mode & 0o170000) === 0o040000
 
     if (!isDir) {
@@ -985,17 +1744,14 @@ export class SshManager {
     }
 
     const entries = await this.listDir(sessionId, remotePath)
-    const jobs: Array<{ remotePath: string; localPath: string; size: number }> =
-      []
-    for (const entry of entries) {
-      const nested = await this.collectDownloadJobs(
+    const nested = await mapPool(entries, COLLECT_CONCURRENCY, (entry) =>
+      this.collectDownloadJobs(
         sessionId,
         entry.path,
         path.join(localPath, entry.name),
-      )
-      jobs.push(...nested)
-    }
-    return jobs
+      ),
+    )
+    return nested.flat()
   }
 
   async uploadFile(
@@ -1014,6 +1770,85 @@ export class SshManager {
       if (control?.isCancelled()) {
         throw new TransferCancelledError(control.key)
       }
+    }
+
+    const session = this.sessions.get(sessionId)
+    if (!session) throw new Error('Session not found')
+    if (session.protocol === 'ftp') {
+      await new Promise<void>(async (resolve, reject) => {
+        let cancelled = false
+        let ftp: FtpClient | null = null
+
+        const cleanup = () => {
+          try {
+            ftp?.trackProgress()
+          } catch {
+            // ignore
+          }
+        }
+
+        try {
+          throwIfCancelled()
+          ftp = await this.getFtp(session)
+
+          const total = fs.statSync(localPath).size
+          const parent =
+            remotePath.includes('/')
+              ? remotePath.slice(0, remotePath.lastIndexOf('/')) || '/'
+              : '/'
+
+          if (parent && parent !== '/') {
+            await ftp.ensureDir(parent)
+          }
+
+          let transferred = 0
+          ftp.trackProgress((info) => {
+            if (control?.isCancelled()) {
+              cancelled = true
+              try {
+                ftp?.close()
+              } catch {
+                // ignore
+              }
+              session.ftp = null
+              return
+            }
+            if (info.type !== 'upload') return
+            transferred = info.bytes
+            onBytes?.(transferred, total || transferred)
+          })
+
+          control?.registerAbort(() => {
+            cancelled = true
+            try {
+              ftp?.close()
+            } catch {
+              // ignore
+            }
+            session.ftp = null
+          })
+
+          await ftp.uploadFrom(localPath, remotePath)
+          control?.clearAbort()
+          cleanup()
+
+          if (cancelled || control?.isCancelled()) {
+            reject(new TransferCancelledError(control?.key ?? 'upload'))
+            return
+          }
+
+          onBytes?.(total, total)
+          resolve()
+        } catch (err) {
+          cleanup()
+          if (cancelled || control?.isCancelled()) {
+            reject(new TransferCancelledError(control?.key ?? 'upload'))
+            return
+          }
+          reject(err instanceof Error ? err : new Error(String(err)))
+        }
+      })
+      return
     }
 
     await this.withTransferRetry(sessionId, async () => {
@@ -1061,12 +1896,22 @@ export class SshManager {
         let transferred = offset
         const readStream = fs.createReadStream(localPath, {
           start: offset,
+          highWaterMark: STREAM_HIGH_WATER_MARK,
         })
         const writeStream = sftp.createWriteStream(
           partRemote,
           offset > 0
-            ? { flags: 'r+', start: offset, autoClose: true }
-            : { flags: 'w', autoClose: true },
+            ? {
+                flags: 'r+',
+                start: offset,
+                autoClose: true,
+                highWaterMark: STREAM_HIGH_WATER_MARK,
+              }
+            : {
+                flags: 'w',
+                autoClose: true,
+                highWaterMark: STREAM_HIGH_WATER_MARK,
+              },
         )
 
         const fail = (err: unknown) => {
@@ -1133,8 +1978,13 @@ export class SshManager {
   ): Promise<void> {
     const session = this.sessions.get(sessionId)
     if (!session) throw new Error('Session not found')
-    const sftp = await this.getSftp(session)
-    await this.mkdirp(sftp, remotePath)
+    if (session.protocol === 'ftp') {
+      const ftp = await this.getFtp(session)
+      await ftp.ensureDir(remotePath)
+    } else {
+      const sftp = await this.getSftp(session)
+      await this.mkdirp(sftp, remotePath)
+    }
   }
 
   async rename(
@@ -1144,6 +1994,13 @@ export class SshManager {
   ): Promise<void> {
     const session = this.sessions.get(sessionId)
     if (!session) throw new Error('Session not found')
+
+    if (session.protocol === 'ftp') {
+      const ftp = await this.getFtp(session)
+      await ftp.rename(fromPath, toPath)
+      return
+    }
+
     const sftp = await this.getSftp(session)
     return new Promise((resolve, reject) => {
       sftp.rename(fromPath, toPath, (err) => {
@@ -1156,6 +2013,18 @@ export class SshManager {
   async removeRemote(sessionId: string, remotePath: string): Promise<number> {
     const session = this.sessions.get(sessionId)
     if (!session) throw new Error('Session not found')
+    if (session.protocol === 'ftp') {
+      const ftp = await this.getFtp(session)
+      const stats = await this.statRemote(sessionId, remotePath)
+      const isDir = (stats.mode & 0o170000) === 0o040000
+      if (isDir) {
+        await ftp.removeDir(remotePath)
+        return 1
+      }
+      await ftp.remove(remotePath)
+      return 1
+    }
+
     const sftp = await this.getSftp(session)
     return this.removeRecursive(sessionId, sftp, remotePath)
   }
@@ -1167,119 +2036,27 @@ export class SshManager {
     remoteDir: string,
     onProgress?: (progress: TransferProgress) => void,
   ): Promise<{ saved: number; cancelled: number }> {
-    const jobs: Array<{ localPath: string; remotePath: string; size: number }> =
-      []
-    for (const localPath of localPaths) {
-      jobs.push(
-        ...(await this.collectUploadJobs(sessionId, localPath, remoteDir)),
-      )
-    }
+    const nested = await mapPool(localPaths, COLLECT_CONCURRENCY, (localPath) =>
+      this.collectUploadJobs(sessionId, localPath, remoteDir),
+    )
+    const jobs = nested.flat()
 
-    const transferId = randomUUID()
-    const files: TransferFileInfo[] = jobs.map((job, index) => ({
-      key: `${index}:${job.remotePath}`,
-      path: job.remotePath,
-      status: 'pending' as const,
-    }))
-    const batch: ActiveTransfer = {
-      cancelled: new Set(),
-      currentKey: null,
-      abortCurrent: null,
-      files,
-    }
-    this.transfers.set(transferId, batch)
-
-    const filesTotal = jobs.length
-    const totalBytes = jobs.reduce((sum, job) => sum + Math.max(job.size, 1), 0)
-    let transferredBytes = 0
-    let filesDone = 0
-    let filesCancelled = 0
-
-    const emit = (currentPath?: string, fileTransferred = 0, fileTotal = 0) => {
-      const currentContribution =
-        fileTotal > 0 ? Math.min(fileTransferred, fileTotal) : 0
-      const overall = Math.min(
-        totalBytes,
-        transferredBytes + currentContribution,
-      )
-      onProgress?.({
-        transferId,
-        percent:
-          totalBytes > 0 ? Math.min(100, (overall / totalBytes) * 100) : 0,
-        transferred: overall,
-        total: totalBytes,
-        currentPath,
-        filesDone,
-        filesTotal,
-        filesCancelled,
-        files: files.map((item) => ({ ...item })),
-      })
-    }
-
-    try {
-      emit()
-      for (let index = 0; index < jobs.length; index += 1) {
-        const job = jobs[index]
-        const key = files[index].key
-        if (batch.cancelled.has(key) || files[index].status === 'cancelled') {
-          files[index].status = 'cancelled'
-          filesCancelled += 1
-          transferredBytes += Math.max(job.size, 1)
-          emit()
-          continue
-        }
-
-        files[index].status = 'active'
-        batch.currentKey = key
-        emit(job.remotePath, 0, job.size)
-
-        try {
-          await this.uploadFile(
-            sessionId,
-            job.localPath,
-            job.remotePath,
-            (fileTransferred, fileTotal) => {
-              emit(job.remotePath, fileTransferred, fileTotal || job.size)
-            },
-            {
-              key,
-              isCancelled: () => batch.cancelled.has(key),
-              registerAbort: (abort) => {
-                batch.abortCurrent = abort
-              },
-              clearAbort: () => {
-                if (batch.currentKey === key) batch.abortCurrent = null
-              },
-            },
-          )
-          files[index].status = 'done'
-          filesDone += 1
-        } catch (err) {
-          if (isTransferCancelledError(err)) {
-            files[index].status = 'cancelled'
-            filesCancelled += 1
-            await this.cleanupRemotePart(sessionId, job.remotePath)
-          } else {
-            const message =
-              err instanceof Error ? err.message : String(err ?? 'Transfer failed')
-            files[index].status = 'error'
-            files[index].error = message
-            // Count toward completion so the dock does not hang on a sticky active file.
-            filesCancelled += 1
-            await this.cleanupRemotePart(sessionId, job.remotePath)
-          }
-        } finally {
-          batch.currentKey = null
-          batch.abortCurrent = null
-        }
-
-        transferredBytes += Math.max(job.size, 1)
-        emit(job.remotePath, job.size, job.size)
-      }
-      return { saved: filesDone, cancelled: filesCancelled }
-    } finally {
-      this.transfers.delete(transferId)
-    }
+    return this.runTransferJobs(
+      sessionId,
+      jobs,
+      onProgress,
+      undefined,
+      async (job, _key, _batch, onBytes, control) => {
+        await this.uploadFile(
+          sessionId,
+          job.localPath,
+          job.remotePath,
+          onBytes,
+          control,
+        )
+      },
+      (job) => this.cleanupRemotePart(sessionId, job.remotePath),
+    )
   }
 
   private async collectUploadJobs(
@@ -1303,22 +2080,25 @@ export class SshManager {
 
     const session = this.sessions.get(sessionId)
     if (!session) throw new Error('Session not found')
-    const sftp = await this.getSftp(session)
-    await this.mkdirp(sftp, remotePath)
-
-    const jobs: Array<{ localPath: string; remotePath: string; size: number }> =
-      []
-    for (const name of fs.readdirSync(localPath)) {
-      if (isTransferPartName(name)) continue
-      jobs.push(
-        ...(await this.collectUploadJobs(
-          sessionId,
-          path.join(localPath, name),
-          remotePath,
-        )),
-      )
+    if (session.protocol === 'ftp') {
+      const ftp = await this.getFtp(session)
+      await ftp.ensureDir(remotePath)
+    } else {
+      const sftp = await this.getSftp(session)
+      await this.mkdirp(sftp, remotePath)
     }
-    return jobs
+
+    const names = fs.readdirSync(localPath).filter(
+      (name) => !isTransferPartName(name),
+    )
+    const nested = await mapPool(names, COLLECT_CONCURRENCY, (name) =>
+      this.collectUploadJobs(
+        sessionId,
+        path.join(localPath, name),
+        remotePath,
+      ),
+    )
+    return nested.flat()
   }
 
   private async mkdirp(sftp: SFTPWrapper, remotePath: string): Promise<void> {
@@ -1391,6 +2171,37 @@ export class SshManager {
       })
     })
     return removed
+  }
+
+  private async statRemote(
+    sessionId: string,
+    remotePath: string,
+  ): Promise<{ mode: number; size: number }> {
+    const session = this.sessions.get(sessionId)
+    if (!session || session.closed) throw new Error('Session not found')
+
+    if (session.protocol !== 'ftp') {
+      const sftp = await this.getSftp(session)
+      return this.statPath(sftp, remotePath)
+    }
+
+    const ftp = await this.getFtp(session)
+    if (!remotePath || remotePath === '/') {
+      return { mode: 0o040000, size: 0 }
+    }
+
+    const name = remotePath.split('/').filter(Boolean).at(-1) ?? remotePath
+    const parent =
+      remotePath.includes('/')
+        ? remotePath.slice(0, remotePath.lastIndexOf('/')) || '/'
+        : '/'
+
+    const list = await ftp.list(parent)
+    const match = list.find((item) => item.name === name)
+    if (!match) throw new Error('Failed to stat path')
+
+    if (match.isDirectory) return { mode: 0o040000, size: 0 }
+    return { mode: 0o100000, size: match.size ?? 0 }
   }
 
   private statPath(
@@ -1535,6 +2346,54 @@ export class SshManager {
     })
   }
 
+  private isSftpStaleError(err: unknown): boolean {
+    const message = err instanceof Error ? err.message : String(err ?? '')
+    return /no response from server|sftp.*closed|failed to open sftp/i.test(
+      message,
+    )
+  }
+
+  private sftpPing(session: Session, started: number): Promise<number> {
+    return this.withSftp(session, (sftp) =>
+      new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error('Ping timeout'))
+        }, 8000)
+        sftp.realpath('.', (err) => {
+          clearTimeout(timeout)
+          if (err) reject(err)
+          else resolve(Math.max(1, Date.now() - started))
+        })
+      }),
+    )
+  }
+
+  private sftpGetCwd(session: Session): Promise<string> {
+    return this.withSftp(session, (sftp) =>
+      new Promise((resolve, reject) => {
+        sftp.realpath('.', (err, absPath) => {
+          if (err) reject(err)
+          else resolve(absPath || '/')
+        })
+      }),
+    )
+  }
+
+  private async withSftp<T>(
+    session: Session,
+    fn: (sftp: SFTPWrapper) => Promise<T>,
+  ): Promise<T> {
+    try {
+      const sftp = await this.getSftp(session)
+      return await fn(sftp)
+    } catch (err) {
+      if (!this.isSftpStaleError(err)) throw err
+      session.sftp = null
+      const sftp = await this.getSftp(session)
+      return fn(sftp)
+    }
+  }
+
   private getSftp(session: Session): Promise<SFTPWrapper> {
     if (session.sftp) return Promise.resolve(session.sftp)
     return new Promise((resolve, reject) => {
@@ -1550,6 +2409,25 @@ export class SshManager {
         resolve(sftp)
       })
     })
+  }
+
+  private async getFtp(session: Session): Promise<FtpClient> {
+    if (session.ftp && !session.ftp.closed) return session.ftp
+    if (!session.ftpConfig) {
+      throw new Error('FTP config is missing for this session')
+    }
+
+    const ftp = new FtpClient()
+    ftp.ftp.verbose = false
+    await ftp.access({
+      host: session.ftpConfig.host,
+      port: session.ftpConfig.port,
+      user: session.ftpConfig.username,
+      password: session.ftpConfig.password,
+    })
+
+    session.ftp = ftp
+    return ftp
   }
 
   private execPwd(session: Session): Promise<string> {
@@ -1610,25 +2488,22 @@ export class SshManager {
     stream: ClientChannel,
     theme: AppTheme,
   ): Promise<void> {
-    const preview = await this.waitForPrompt(stream, 800)
+    const preview = await this.waitForPrompt(stream, 600)
     const isPS = isPowerShellBanner(preview)
 
     if (isPS) {
       stream.write(colorBootstrap(true, theme))
-      await delay(280)
+      await delay(200)
       stream.write(' Clear-Host\n')
     } else {
-      // 1) Turn history off in its own line.
-      // 2) Run bootstrap while history is off.
-      // 3) Strip our leftovers from HISTFILE (incl. old sessions), reload, re-enable.
       stream.write(UNIX_HISTORY_OFF)
-      await this.waitForPrompt(stream, 400)
+      await this.waitForPrompt(stream, 300)
       stream.write(`${colorBootstrap(false, theme)}\n`)
-      await this.waitForPrompt(stream, 500)
+      await this.waitForPrompt(stream, 400)
       stream.write(UNIX_HISTORY_SCRUB_ON)
     }
-    await this.waitForPrompt(stream, 900)
-    await delay(80)
+    await this.waitForPrompt(stream, 700)
+    await delay(60)
   }
 
   private finishSession(

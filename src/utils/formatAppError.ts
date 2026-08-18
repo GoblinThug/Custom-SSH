@@ -54,6 +54,10 @@ const MESSAGE_RULES: Array<{ re: RegExp; key: MessageKey }> = [
     key: 'errAuthFailed',
   },
   {
+    re: /ftp is not supported|ftp not supported|ftp пока не поддерживается/i,
+    key: 'errFtpNotSupported',
+  },
+  {
     re: /permission denied \(publickey|password|keyboard-interactive|hostbased\)/i,
     key: 'errAuthFailed',
   },
@@ -102,7 +106,7 @@ const MESSAGE_RULES: Array<{ re: RegExp; key: MessageKey }> = [
     key: 'errConnectionReset',
   },
   {
-    re: /connection lost|broken pipe|channel closed|premature (eof|close)/i,
+    re: /connection lost|broken pipe|channel closed|premature (eof|close)|no response from server/i,
     key: 'errSessionLost',
   },
   {
@@ -176,6 +180,22 @@ const MESSAGE_RULES: Array<{ re: RegExp; key: MessageKey }> = [
   {
     re: /failed to (list|stat|open sftp|pwd)/i,
     key: 'errFileOpFailed',
+  },
+  {
+    re: /archive_too_large/i,
+    key: 'archiveTooLarge',
+  },
+  {
+    re: /archive_unsupported/i,
+    key: 'archiveUnsupported',
+  },
+  {
+    re: /erar_missing_password|erar_bad_password|missing_password|bad_password/i,
+    key: 'archivePasswordNeeded',
+  },
+  {
+    re: /archive_open_failed/i,
+    key: 'archiveOpenFailed',
   },
 ]
 

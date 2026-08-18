@@ -1,5 +1,7 @@
 export type AuthMethod = 'password' | 'privateKey'
 
+export type ConnectionProtocol = 'ssh' | 'sftp' | 'ftp'
+
 export type FolderColor =
   | 'blue'
   | 'green'
@@ -29,6 +31,8 @@ export interface SavedConnection {
   privateKeyPath?: string
   passphrase?: string
   folderId?: string | null
+  /** Protocol derived during connect or from external importers. */
+  protocol?: ConnectionProtocol
   createdAt: string
   updatedAt: string
   lastConnectedAt?: string
@@ -71,6 +75,8 @@ export type ConnectPayload = {
   cols?: number
   rows?: number
   theme?: 'dark' | 'light'
+  /** Skip slow protocol probes when the workspace already knows the protocol. */
+  protocolHint?: ConnectionProtocol
 }
 
 export const emptyDraft = (): ConnectionDraft => ({
@@ -89,6 +95,8 @@ export interface RemoteFsEntry {
   name: string
   path: string
   isDir: boolean
+  /** File size in bytes (files only). */
+  size?: number
 }
 
 export const APP_LOCALE_IDS = ['ru', 'en'] as const

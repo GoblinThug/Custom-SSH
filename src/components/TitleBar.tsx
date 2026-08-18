@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useSettings } from '../i18n/SettingsContext'
 
 type Props = {
@@ -8,19 +8,62 @@ type Props = {
 export function TitleBar({ onClose }: Props) {
   const { t } = useSettings()
   const [fullscreen, setFullscreen] = useState(false)
+  const draggingRef = useRef(false)
+  const pendingRef = useRef<{ x: number; y: number } | null>(null)
 
   useEffect(() => {
-    void window.sshApi.windowIsFullscreen().then(setFullscreen)
+    const syncFilled = (filled: boolean) => {
+      setFullscreen(filled)
+      document.documentElement.classList.toggle('is-maximized', filled)
+    }
+    void window.sshApi.windowIsFullscreen().then(syncFilled)
     return window.sshApi.onWindowState((state) => {
-      setFullscreen(state.fullscreen)
+      syncFilled(state.maximized || state.fullscreen)
     })
   }, [])
+
+  const endDrag = () => {
+    pendingRef.current = null
+    if (!draggingRef.current) return
+    draggingRef.current = false
+    document.documentElement.classList.remove('is-dragging-window')
+    void window.sshApi.windowEndDrag()
+  }
 
   return (
     <header className="titlebar">
       <div
         className="titlebar__drag"
         onDoubleClick={() => void window.sshApi.windowFullscreenToggle()}
+        onPointerDown={(event) => {
+          if (event.button !== 0 || !fullscreen) return
+          event.currentTarget.setPointerCapture(event.pointerId)
+          pendingRef.current = { x: event.screenX, y: event.screenY }
+        }}
+        onPointerMove={(event) => {
+          const pending = pendingRef.current
+          if (pending && !draggingRef.current) {
+            const dist = Math.hypot(
+              event.screenX - pending.x,
+              event.screenY - pending.y,
+            )
+            if (dist < 6) return
+            pendingRef.current = null
+            draggingRef.current = true
+            document.documentElement.classList.add('is-dragging-window')
+            void window.sshApi
+              .windowRestoreForDrag(event.screenX, event.screenY)
+              .then(() => {
+                window.sshApi.windowDragTo(event.screenX, event.screenY)
+              })
+            return
+          }
+          if (draggingRef.current) {
+            window.sshApi.windowDragTo(event.screenX, event.screenY)
+          }
+        }}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
       />
 
       <div className="titlebar__brand">{t('appName')}</div>

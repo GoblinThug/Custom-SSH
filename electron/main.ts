@@ -9,9 +9,11 @@ import {
   Menu,
   Tray,
 } from 'electron'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
-import { SshManager } from './ssh-manager'
+import { isConnectCancelled, SshManager } from './ssh-manager'
 import {
   buildExportPayload,
   mergeImport,
@@ -29,6 +31,14 @@ import {
   touchConnection,
 } from './store'
 import { loadSettings, saveSettings } from './settings-store'
+import {
+  archiveKindFromName,
+  extractArchiveFile,
+  isArchiveName,
+  listArchiveFile,
+  type ArchiveKind,
+  type ArchiveListEntry,
+} from './archive'
 import { fadeOpacity } from './window-fx'
 import { initAutoUpdater } from './updater'
 import type {
@@ -41,11 +51,23 @@ import type {
 
 let mainWindow: BrowserWindow | null = null
 const editorWindows = new Map<string, BrowserWindow>()
+const viewerWindows = new Map<string, BrowserWindow>()
+const archiveWindows = new Map<string, BrowserWindow>()
+const MAX_ARCHIVE_BYTES = 80 * 1024 * 1024
+
+type ArchiveCache = {
+  localPath: string
+  kind: ArchiveKind
+  entries: ArchiveListEntry[]
+  size: number
+  name: string
+}
+
+const archiveCache = new Map<string, ArchiveCache>()
+const archiveInflight = new Map<string, Promise<ArchiveCache>>()
 const ssh = new SshManager(() => mainWindow)
-/** Manual fullscreen — more reliable than setFullScreen on frameless Windows. */
-let appFullscreen = false
-let boundsBeforeFullscreen: Electron.Rectangle | null = null
 let animatingWindow = false
+let expectRestoreFx = false
 let tray: Tray | null = null
 let trayPopup: BrowserWindow | null = null
 /** True while the tray mini-menu is considered open (more reliable than isVisible on Win). */
@@ -391,16 +413,202 @@ function ensureTray() {
 function hideMainToTray() {
   if (!mainWindow || mainWindow.isDestroyed()) return
   ensureTray()
-  if (appFullscreen) {
-    appFullscreen = false
-    boundsBeforeFullscreen = null
-  }
   destroyTrayPopup()
   mainWindow.hide()
 }
 
 function editorKey(sessionId: string, remotePath: string) {
   return `${sessionId}::${remotePath}`
+}
+
+function viewerKey(sessionId: string, remotePath: string) {
+  return `${sessionId}::${remotePath}`
+}
+
+function archiveKey(sessionId: string, remotePath: string) {
+  return `${sessionId}::${remotePath}`
+}
+
+function remoteParentDir(remotePath: string): string {
+  const normalized = remotePath.replace(/\\/g, '/').replace(/\/+$/, '')
+  const index = normalized.lastIndexOf('/')
+  if (index <= 0) return '/'
+  return normalized.slice(0, index) || '/'
+}
+
+function isMissingRemote(err: unknown): boolean {
+  const code =
+    err && typeof err === 'object' && 'code' in err
+      ? Number((err as { code?: unknown }).code)
+      : NaN
+  const message = err instanceof Error ? err.message : String(err ?? '')
+  return code === 2 || /no such file/i.test(message)
+}
+
+function disposeArchiveCache(key: string) {
+  const cached = archiveCache.get(key)
+  archiveCache.delete(key)
+  if (!cached) return
+  try {
+    fs.unlinkSync(cached.localPath)
+  } catch {
+    // already gone
+  }
+}
+
+function safeTempName(name: string): string {
+  return name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_') || 'archive'
+}
+
+async function openArchiveWindow(sessionId: string, remotePath: string) {
+  const key = archiveKey(sessionId, remotePath)
+  const existing = archiveWindows.get(key)
+  if (existing && !existing.isDestroyed()) {
+    existing.focus()
+    return
+  }
+
+  const win = new BrowserWindow(
+    appWindowOptions({
+      width: 900,
+      height: 640,
+      minWidth: 560,
+      minHeight: 400,
+    }),
+  )
+
+  archiveWindows.set(key, win)
+  ;(win as BrowserWindow & { __forceClose?: boolean }).__forceClose = false
+  bindWindowChrome(win)
+  win.once('ready-to-show', () => {
+    if (!win.isDestroyed()) void playShowAnimation(win)
+  })
+  win.on('close', (event) => {
+    const archiveWin = win as BrowserWindow & { __forceClose?: boolean }
+    if (isQuitting || archiveWin.__forceClose || win.isDestroyed()) return
+    event.preventDefault()
+    win.webContents.send('archive:close-request')
+  })
+  win.on('closed', () => {
+    archiveWindows.delete(key)
+    const pending = archiveInflight.get(key)
+    if (pending) {
+      void pending.finally(() => {
+        if (!archiveWindows.has(key)) disposeArchiveCache(key)
+      })
+      return
+    }
+    disposeArchiveCache(key)
+  })
+
+  const query = { sessionId, path: remotePath }
+
+  if (process.env.VITE_DEV_SERVER_URL) {
+    const url = new URL('/archive.html', process.env.VITE_DEV_SERVER_URL)
+    url.searchParams.set('sessionId', sessionId)
+    url.searchParams.set('path', remotePath)
+    await win.loadURL(url.toString())
+  } else {
+    await win.loadFile(path.join(__dirname, '../dist/archive.html'), { query })
+  }
+}
+
+async function ensureArchiveCached(
+  sessionId: string,
+  remotePath: string,
+): Promise<ArchiveCache> {
+  const key = archiveKey(sessionId, remotePath)
+  const hit = archiveCache.get(key)
+  if (hit && fs.existsSync(hit.localPath)) return hit
+  if (hit) archiveCache.delete(key)
+
+  const pending = archiveInflight.get(key)
+  if (pending) return pending
+
+  const job = (async () => {
+    const kind = archiveKindFromName(remotePath)
+    if (!kind) throw new Error('ARCHIVE_UNSUPPORTED')
+    const size = await ssh.remoteFileSize(sessionId, remotePath)
+    if (size > MAX_ARCHIVE_BYTES) throw new Error('ARCHIVE_TOO_LARGE')
+
+    const dir = path.join(os.tmpdir(), 'customssh-archives')
+    fs.mkdirSync(dir, { recursive: true })
+    const id = crypto.randomBytes(8).toString('hex')
+    const localPath = path.join(
+      dir,
+      `${id}-${safeTempName(path.basename(remotePath))}`,
+    )
+    try {
+      await ssh.downloadFile(sessionId, remotePath, localPath)
+      const entries = await listArchiveFile(localPath, kind)
+      const cached: ArchiveCache = {
+        localPath,
+        kind,
+        entries,
+        size,
+        name: path.basename(remotePath) || 'archive',
+      }
+      archiveCache.set(key, cached)
+      return cached
+    } catch (err) {
+      try {
+        fs.unlinkSync(localPath)
+      } catch {
+        // ignore
+      }
+      throw err
+    }
+  })().finally(() => {
+    archiveInflight.delete(key)
+  })
+
+  archiveInflight.set(key, job)
+  return job
+}
+
+async function openViewerWindow(sessionId: string, remotePath: string) {
+  const key = viewerKey(sessionId, remotePath)
+  const existing = viewerWindows.get(key)
+  if (existing && !existing.isDestroyed()) {
+    existing.focus()
+    return
+  }
+
+  const win = new BrowserWindow(
+    appWindowOptions({
+      width: 960,
+      height: 720,
+      minWidth: 480,
+      minHeight: 360,
+    }),
+  )
+
+  viewerWindows.set(key, win)
+  ;(win as BrowserWindow & { __forceClose?: boolean }).__forceClose = false
+  bindWindowChrome(win)
+  win.once('ready-to-show', () => {
+    if (!win.isDestroyed()) void playShowAnimation(win)
+  })
+  win.on('close', (event) => {
+    const viewerWin = win as BrowserWindow & { __forceClose?: boolean }
+    if (isQuitting || viewerWin.__forceClose || win.isDestroyed()) return
+    event.preventDefault()
+    win.webContents.send('viewer:close-request')
+  })
+  win.on('closed', () => {
+    viewerWindows.delete(key)
+  })
+
+  const query = { sessionId, path: remotePath }
+
+  if (process.env.VITE_DEV_SERVER_URL) {
+    const url = new URL('/viewer.html', process.env.VITE_DEV_SERVER_URL)
+    url.searchParams.set('sessionId', sessionId)
+    url.searchParams.set('path', remotePath)
+    await win.loadURL(url.toString())
+  } else {
+    await win.loadFile(path.join(__dirname, '../dist/viewer.html'), { query })
+  }
 }
 
 async function openEditorWindow(sessionId: string, remotePath: string) {
@@ -411,31 +619,18 @@ async function openEditorWindow(sessionId: string, remotePath: string) {
     return
   }
 
-  const win = new BrowserWindow({
-    width: 1100,
-    height: 740,
-    minWidth: 720,
-    minHeight: 480,
-    frame: false,
-    transparent: true,
-    hasShadow: true,
-    backgroundColor: '#00000000',
-    // Windows 11 OS rounding + CSS 14px radius leaves a translucent crescent
-    // in the corners; let CSS alone shape the window on win32.
-    roundedCorners: process.platform !== 'win32',
-    show: false,
-    title: 'Custom SSH',
-    icon: resolveAppIcon(),
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-    },
-  })
+  const win = new BrowserWindow(
+    appWindowOptions({
+      width: 1100,
+      height: 740,
+      minWidth: 720,
+      minHeight: 480,
+    }),
+  )
 
   editorWindows.set(key, win)
   ;(win as BrowserWindow & { __forceClose?: boolean }).__forceClose = false
+  bindWindowChrome(win)
   win.once('ready-to-show', () => {
     if (!win.isDestroyed()) void playShowAnimation(win)
   })
@@ -465,10 +660,236 @@ async function openEditorWindow(sessionId: string, remotePath: string) {
 }
 
 function emitWindowState(win: BrowserWindow) {
+  if (win.isDestroyed()) return
+  const filled = win.isMaximized() || win.isFullScreen()
   win.webContents.send('window:state', {
     maximized: win.isMaximized(),
-    fullscreen: appFullscreen || win.isFullScreen(),
+    fullscreen: filled,
   })
+}
+
+const WM_NCLBUTTONDOWN = 0x00A1
+const WM_EXITSIZEMOVE = 0x0232
+const HT_CAPTION = 2
+const SNAP_EDGE_PX = 14
+
+const lastNormalBounds = new WeakMap<BrowserWindow, Electron.Rectangle>()
+const dragGrab = new WeakMap<BrowserWindow, { dx: number; dy: number }>()
+
+function readWinParam(value: Buffer | number): number {
+  if (typeof value === 'number') return value
+  if (Buffer.isBuffer(value) && value.length >= 4) return value.readUInt32LE(0)
+  return 0
+}
+
+function rememberNormalBounds(win: BrowserWindow) {
+  if (
+    win.isDestroyed() ||
+    win.isMaximized() ||
+    win.isMinimized() ||
+    win.isFullScreen()
+  ) {
+    return
+  }
+  const bounds = win.getBounds()
+  const work = screen.getDisplayMatching(bounds).workArea
+  // Side-snapped windows fill the work area height — don't use that as restore size.
+  if (
+    Math.abs(bounds.height - work.height) <= 8 &&
+    Math.abs(bounds.y - work.y) <= 4
+  ) {
+    return
+  }
+  lastNormalBounds.set(win, bounds)
+}
+
+function boundsForRestore(win: BrowserWindow): Electron.Rectangle {
+  const stored = lastNormalBounds.get(win)
+  if (stored && stored.width >= 320 && stored.height >= 240) return stored
+  try {
+    const normal = win.getNormalBounds()
+    if (normal.width >= 320 && normal.height >= 240) return normal
+  } catch {
+    // getNormalBounds can throw on some frameless states.
+  }
+  const work = screen.getDisplayMatching(win.getBounds()).workArea
+  return {
+    x: work.x + Math.round(work.width * 0.1),
+    y: work.y + Math.round(work.height * 0.1),
+    width: Math.round(work.width * 0.7),
+    height: Math.round(work.height * 0.7),
+  }
+}
+
+function isFilledWindow(win: BrowserWindow) {
+  if (win.isMaximized() || win.isFullScreen()) return true
+  const bounds = win.getBounds()
+  const work = screen.getDisplayMatching(bounds).workArea
+  return (
+    Math.abs(bounds.x - work.x) <= 4 &&
+    Math.abs(bounds.y - work.y) <= 4 &&
+    Math.abs(bounds.width - work.width) <= 8 &&
+    Math.abs(bounds.height - work.height) <= 8
+  )
+}
+
+function restoreWindowForDrag(
+  win: BrowserWindow,
+  cursorX: number,
+  cursorY: number,
+) {
+  if (win.isDestroyed() || !isFilledWindow(win)) return false
+  const maxBounds = win.getBounds()
+  const normal = boundsForRestore(win)
+  const ratio = Math.min(
+    1,
+    Math.max(0, (cursorX - maxBounds.x) / Math.max(maxBounds.width, 1)),
+  )
+  if (win.isFullScreen()) win.setFullScreen(false)
+  if (win.isMaximized()) win.unmaximize()
+  const work = screen.getDisplayNearestPoint({ x: cursorX, y: cursorY }).workArea
+  const x = Math.round(cursorX - normal.width * ratio)
+  const y = Math.max(work.y, cursorY - 20)
+  win.setBounds({
+    x: Math.min(Math.max(x, work.x - normal.width + 80), work.x + work.width - 80),
+    y,
+    width: normal.width,
+    height: normal.height,
+  })
+  const placed = win.getBounds()
+  dragGrab.set(win, { dx: cursorX - placed.x, dy: cursorY - placed.y })
+  emitWindowState(win)
+  return true
+}
+
+function dragWindowTo(win: BrowserWindow, cursorX: number, cursorY: number) {
+  const grab = dragGrab.get(win)
+  if (!grab || win.isDestroyed()) return
+  win.setPosition(
+    Math.round(cursorX - grab.dx),
+    Math.round(cursorY - grab.dy),
+  )
+}
+
+function endWindowDrag(win: BrowserWindow) {
+  dragGrab.delete(win)
+  snapWindowToEdges(win)
+  rememberNormalBounds(win)
+}
+
+function snapWindowToEdges(win: BrowserWindow) {
+  if (win.isDestroyed() || win.isMaximized() || win.isMinimized()) return
+  const cursor = screen.getCursorScreenPoint()
+  const work = screen.getDisplayNearestPoint(cursor).workArea
+  if (cursor.y <= work.y + SNAP_EDGE_PX) {
+    win.maximize()
+    return
+  }
+  if (cursor.x <= work.x + SNAP_EDGE_PX) {
+    win.setBounds({
+      x: work.x,
+      y: work.y,
+      width: Math.floor(work.width / 2),
+      height: work.height,
+    })
+    return
+  }
+  if (cursor.x >= work.x + work.width - SNAP_EDGE_PX) {
+    const width = Math.floor(work.width / 2)
+    win.setBounds({
+      x: work.x + work.width - width,
+      y: work.y,
+      width,
+      height: work.height,
+    })
+  }
+}
+
+/** Keep CSS rounding (needs a transparent HWND) and still snap like Windows. */
+function attachWindowsSnap(win: BrowserWindow) {
+  if (process.platform !== 'win32') return
+
+  rememberNormalBounds(win)
+  win.on('moved', () => rememberNormalBounds(win))
+  win.on('resized', () => rememberNormalBounds(win))
+
+  win.hookWindowMessage(WM_NCLBUTTONDOWN, (wParam) => {
+    if (readWinParam(wParam) !== HT_CAPTION) return
+    const cursor = screen.getCursorScreenPoint()
+    restoreWindowForDrag(win, cursor.x, cursor.y)
+  })
+
+  win.hookWindowMessage(WM_EXITSIZEMOVE, () => {
+    endWindowDrag(win)
+  })
+
+  win.on('will-move', (event) => {
+    if (!isFilledWindow(win) || dragGrab.has(win)) return
+    const cursor = screen.getCursorScreenPoint()
+    event.preventDefault()
+    restoreWindowForDrag(win, cursor.x, cursor.y)
+  })
+}
+
+function bindWindowChrome(win: BrowserWindow) {
+  const emit = () => emitWindowState(win)
+  win.on('maximize', emit)
+  win.on('unmaximize', emit)
+  win.on('enter-full-screen', emit)
+  win.on('leave-full-screen', emit)
+  attachWindowsSnap(win)
+}
+
+function appWindowOptions(
+  extra: Electron.BrowserWindowConstructorOptions,
+): Electron.BrowserWindowConstructorOptions {
+  const windows = process.platform === 'win32'
+  return {
+    frame: false,
+    show: false,
+    title: 'Custom SSH',
+    icon: resolveAppIcon(),
+    thickFrame: true,
+    maximizable: true,
+    minimizable: true,
+    fullscreenable: true,
+    transparent: true,
+    hasShadow: true,
+    backgroundColor: '#00000000',
+    // Win11 OS rounding + CSS radius leaves a crescent; CSS alone shapes the HWND.
+    roundedCorners: !windows,
+    ...extra,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      ...extra.webPreferences,
+    },
+  }
+}
+
+let lastFillToggleAt = 0
+
+function toggleWindowFill(win: BrowserWindow): boolean {
+  const now = Date.now()
+  if (now - lastFillToggleAt < 250) {
+    return win.isMaximized() || win.isFullScreen()
+  }
+  lastFillToggleAt = now
+  if (win.isFullScreen()) {
+    win.setFullScreen(false)
+    emitWindowState(win)
+    return false
+  }
+  if (win.isMaximized()) {
+    win.unmaximize()
+    emitWindowState(win)
+    return false
+  }
+  win.maximize()
+  emitWindowState(win)
+  return true
 }
 
 function playShowAnimation(win: BrowserWindow) {
@@ -484,7 +905,10 @@ async function playMinimizeAnimation(win: BrowserWindow) {
   try {
     win.webContents.send('window:fx', { type: 'minimize' })
     await fadeOpacity(win, 1, 0, 160)
-    if (!win.isDestroyed()) win.minimize()
+    if (!win.isDestroyed()) {
+      expectRestoreFx = true
+      win.minimize()
+    }
   } finally {
     // Ready for a clean restore fade-in.
     if (!win.isDestroyed()) win.setOpacity(1)
@@ -499,49 +923,6 @@ async function playRestoreAnimation(win: BrowserWindow) {
     win.setOpacity(0)
     win.webContents.send('window:fx', { type: 'restore' })
     await fadeOpacity(win, 0, 1, 180)
-  } finally {
-    animatingWindow = false
-  }
-}
-
-async function toggleFullscreen(): Promise<boolean> {
-  if (!mainWindow || animatingWindow) {
-    return appFullscreen
-  }
-
-  animatingWindow = true
-  try {
-    if (appFullscreen) {
-      const bounds = boundsBeforeFullscreen
-      appFullscreen = false
-      boundsBeforeFullscreen = null
-
-      if (mainWindow.isFullScreen()) mainWindow.setFullScreen(false)
-      if (mainWindow.isMaximized()) mainWindow.unmaximize()
-
-      await fadeOpacity(mainWindow, 1, 0.82, 70)
-      if (bounds) mainWindow.setBounds(bounds, false)
-      mainWindow.webContents.send('window:fx', { type: 'fullscreen-exit' })
-      await fadeOpacity(mainWindow, 0.82, 1, 120)
-      emitWindowState(mainWindow)
-      return false
-    }
-
-    boundsBeforeFullscreen = mainWindow.isMaximized()
-      ? mainWindow.getNormalBounds()
-      : mainWindow.getBounds()
-
-    if (mainWindow.isMaximized()) mainWindow.unmaximize()
-    if (mainWindow.isFullScreen()) mainWindow.setFullScreen(false)
-
-    const display = screen.getDisplayMatching(boundsBeforeFullscreen)
-    appFullscreen = true
-    await fadeOpacity(mainWindow, 1, 0.82, 70)
-    mainWindow.setBounds(display.bounds, false)
-    mainWindow.webContents.send('window:fx', { type: 'fullscreen-enter' })
-    await fadeOpacity(mainWindow, 0.82, 1, 120)
-    emitWindowState(mainWindow)
-    return true
   } finally {
     animatingWindow = false
   }
@@ -565,28 +946,14 @@ function resolveAppIcon() {
 }
 
 function createWindow() {
-  mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 800,
-    minWidth: 960,
-    minHeight: 620,
-    frame: false,
-    transparent: true,
-    hasShadow: true,
-    backgroundColor: '#00000000',
-    // Windows 11 OS rounding + CSS 14px radius leaves a translucent crescent
-    // in the corners; let CSS alone shape the window on win32.
-    roundedCorners: process.platform !== 'win32',
-    show: false,
-    title: 'Custom SSH',
-    icon: resolveAppIcon(),
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-    },
-  })
+  mainWindow = new BrowserWindow(
+    appWindowOptions({
+      width: 1280,
+      height: 800,
+      minWidth: 960,
+      minHeight: 620,
+    }),
+  )
 
   mainWindow.once('ready-to-show', () => {
     if (mainWindow) void playShowAnimation(mainWindow)
@@ -610,49 +977,14 @@ function createWindow() {
     void mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
   }
 
-  mainWindow.on('maximize', () => {
-    if (mainWindow) emitWindowState(mainWindow)
-  })
-  mainWindow.on('unmaximize', () => {
-    if (mainWindow) emitWindowState(mainWindow)
-  })
-  mainWindow.on('enter-full-screen', () => {
-    if (mainWindow) emitWindowState(mainWindow)
-  })
-  mainWindow.on('leave-full-screen', () => {
-    if (mainWindow) emitWindowState(mainWindow)
-  })
+  bindWindowChrome(mainWindow)
   mainWindow.on('restore', () => {
-    if (mainWindow) void playRestoreAnimation(mainWindow)
-  })
-  // If user leaves our manual fullscreen by other means, drop the flag.
-  mainWindow.on('resize', () => {
-    if (
-      !mainWindow ||
-      !appFullscreen ||
-      !boundsBeforeFullscreen ||
-      animatingWindow
-    ) {
-      return
-    }
-    const current = mainWindow.getBounds()
-    const display = screen.getDisplayMatching(boundsBeforeFullscreen)
-    const full = display.bounds
-    const stillFull =
-      Math.abs(current.x - full.x) <= 2 &&
-      Math.abs(current.y - full.y) <= 2 &&
-      Math.abs(current.width - full.width) <= 4 &&
-      Math.abs(current.height - full.height) <= 4
-    if (!stillFull) {
-      appFullscreen = false
-      boundsBeforeFullscreen = null
-      emitWindowState(mainWindow)
-    }
+    if (!mainWindow || !expectRestoreFx) return
+    expectRestoreFx = false
+    void playRestoreAnimation(mainWindow)
   })
   mainWindow.on('closed', () => {
     mainWindow = null
-    appFullscreen = false
-    boundsBeforeFullscreen = null
   })
 
   mainWindow.on('close', (event) => {
@@ -660,6 +992,41 @@ function createWindow() {
     event.preventDefault()
     mainWindow?.webContents.send('window:close-request')
   })
+}
+
+function enrichConnectPayload(payload: ConnectPayload): ConnectPayload {
+  const host = payload.host.trim()
+  const username = payload.username.trim()
+
+  let next: ConnectPayload = { ...payload, host, username }
+
+  if (next.authMethod === 'password' && !next.password) {
+    const saved = loadWorkspace().connections.find(
+      (item) =>
+        item.host === host &&
+        item.port === next.port &&
+        item.username === username &&
+        item.authMethod === 'password',
+    )
+    if (saved?.password) {
+      next = { ...next, password: saved.password }
+    }
+  }
+
+  if (next.authMethod === 'privateKey' && !next.passphrase) {
+    const saved = loadWorkspace().connections.find(
+      (item) =>
+        item.host === host &&
+        item.port === next.port &&
+        item.username === username &&
+        item.authMethod === 'privateKey',
+    )
+    if (saved?.passphrase) {
+      next = { ...next, passphrase: saved.passphrase }
+    }
+  }
+
+  return next
 }
 
 function registerIpc() {
@@ -819,8 +1186,31 @@ function registerIpc() {
   ipcMain.handle(
     'ssh:connect',
     async (_event, sessionId: string, payload: ConnectPayload) => {
-      const result = await ssh.connect(sessionId, payload)
-      return { ok: true as const, shellId: result.shellId }
+      try {
+        const result = await ssh.connect(sessionId, enrichConnectPayload(payload))
+        return {
+          ok: true as const,
+          shellId: result.shellId,
+          protocol: result.protocol,
+        }
+      } catch (err) {
+        if (isConnectCancelled(err)) {
+          return {
+            ok: false as const,
+            cancelled: true as const,
+            shellId: null,
+            protocol: 'sftp' as const,
+          }
+        }
+        const message =
+          err instanceof Error ? err.message : String(err ?? 'Connection failed')
+        return {
+          ok: false as const,
+          error: message,
+          shellId: null,
+          protocol: 'sftp' as const,
+        }
+      }
     },
   )
 
@@ -887,7 +1277,14 @@ function registerIpc() {
   ipcMain.handle(
     'fs:list',
     async (_event, sessionId: string, remotePath: string) => {
-      return ssh.listDir(sessionId, remotePath)
+      try {
+        return await ssh.listDir(sessionId, remotePath)
+      } catch (err) {
+        // Stale tree paths (deleted after extract, listing a file, etc.)
+        // would otherwise spam Electron's "Error occurred in handler".
+        if (isMissingRemote(err)) return []
+        throw err
+      }
     },
   )
 
@@ -924,6 +1321,20 @@ function registerIpc() {
     return localPath
   }
 
+  function sendIpc(
+    contents: Electron.WebContents | null | undefined,
+    channel: string,
+    payload: unknown,
+  ) {
+    try {
+      if (contents && !contents.isDestroyed()) {
+        contents.send(channel, payload)
+      }
+    } catch {
+      // Window closed during transfer.
+    }
+  }
+
   const emitFsDownloadProgress = (
     event: Electron.IpcMainInvokeEvent,
     progress: {
@@ -943,7 +1354,7 @@ function registerIpc() {
       }>
     },
   ) => {
-    event.sender.send('fs:download-progress', progress)
+    sendIpc(event.sender, 'fs:download-progress', progress)
   }
 
   ipcMain.handle(
@@ -1067,7 +1478,11 @@ function registerIpc() {
       }>
     },
   ) => {
-    event.sender.send('fs:upload-progress', progress)
+    sendIpc(event.sender, 'fs:upload-progress', progress)
+    const mainContents = mainWindow?.webContents
+    if (mainContents && mainContents !== event.sender) {
+      sendIpc(mainContents, 'fs:upload-progress', progress)
+    }
   }
 
   ipcMain.handle(
@@ -1172,8 +1587,139 @@ function registerIpc() {
   ipcMain.handle(
     'editor:open',
     async (_event, sessionId: string, remotePath: string) => {
+      if (isArchiveName(remotePath)) {
+        await openArchiveWindow(sessionId, remotePath)
+        return { ok: true }
+      }
       await openEditorWindow(sessionId, remotePath)
       return { ok: true }
+    },
+  )
+
+  ipcMain.handle(
+    'viewer:open',
+    async (_event, sessionId: string, remotePath: string) => {
+      await openViewerWindow(sessionId, remotePath)
+      return { ok: true }
+    },
+  )
+
+  ipcMain.handle(
+    'archive:open',
+    async (_event, sessionId: string, remotePath: string) => {
+      await openArchiveWindow(sessionId, remotePath)
+      return { ok: true }
+    },
+  )
+
+  ipcMain.handle(
+    'archive:list',
+    async (_event, sessionId: string, remotePath: string) => {
+      const cached = await ensureArchiveCached(sessionId, remotePath)
+      return {
+        name: cached.name,
+        size: cached.size,
+        entries: cached.entries,
+      }
+    },
+  )
+
+  ipcMain.handle(
+    'archive:extract',
+    async (
+      event,
+      sessionId: string,
+      remotePath: string,
+      paths: string[] | null,
+    ) => {
+      const cached = await ensureArchiveCached(sessionId, remotePath)
+      const destDir = remoteParentDir(remotePath)
+      const tmpRoot = path.join(
+        os.tmpdir(),
+        'customssh-archive-extract',
+        crypto.randomBytes(8).toString('hex'),
+      )
+      fs.mkdirSync(tmpRoot, { recursive: true })
+      try {
+        await extractArchiveFile(
+          cached.localPath,
+          cached.kind,
+          paths,
+          tmpRoot,
+        )
+        const locals = fs.existsSync(tmpRoot)
+          ? fs.readdirSync(tmpRoot).map((name) => path.join(tmpRoot, name))
+          : []
+        if (locals.length === 0) {
+          return {
+            ok: true as const,
+            cancelled: false as const,
+            count: 0,
+            dest: destDir,
+          }
+        }
+        const resultTransfer = await ssh.uploadLocal(
+          sessionId,
+          locals,
+          destDir,
+          (progress) => emitFsUploadProgress(event, progress),
+        )
+        sendIpc(mainWindow?.webContents, 'fs:remote-changed', {
+          sessionId,
+          remoteDir: destDir,
+        })
+        return {
+          ok: true as const,
+          cancelled: false as const,
+          count: resultTransfer.saved,
+          dest: destDir,
+        }
+      } finally {
+        try {
+          fs.rmSync(tmpRoot, { recursive: true, force: true })
+        } catch {
+          // ignore
+        }
+      }
+    },
+  )
+
+  ipcMain.handle(
+    'archive:openEntry',
+    async (
+      _event,
+      sessionId: string,
+      remotePath: string,
+      entryPath: string,
+    ) => {
+      const cached = await ensureArchiveCached(sessionId, remotePath)
+      const entry = cached.entries.find((item) => item.path === entryPath)
+      if (!entry || entry.isDir) {
+        throw new Error('ARCHIVE_OPEN_FAILED')
+      }
+      const tmpRoot = path.join(
+        os.tmpdir(),
+        'customssh-archive-open',
+        crypto.randomBytes(8).toString('hex'),
+      )
+      fs.mkdirSync(tmpRoot, { recursive: true })
+      await extractArchiveFile(
+        cached.localPath,
+        cached.kind,
+        [entryPath],
+        tmpRoot,
+      )
+      const localFile = path.join(tmpRoot, ...entryPath.split('/').filter(Boolean))
+      const opened = await shell.openPath(localFile)
+      if (opened) throw new Error(opened)
+      return { ok: true as const }
+    },
+  )
+
+  ipcMain.handle(
+    'fs:readBinary',
+    async (_event, sessionId: string, remotePath: string) => {
+      return ssh.readBinaryFile(sessionId, remotePath)
     },
   )
 
@@ -1224,16 +1770,29 @@ function registerIpc() {
     else win.minimize()
   })
 
-  ipcMain.handle('window:fullscreenToggle', async (event) => {
+  ipcMain.handle('window:fullscreenToggle', (event) => {
     const win = windowFromEvent(event)
     if (!win) return false
-    if (win === mainWindow) return toggleFullscreen()
-    if (win.isMaximized()) {
-      win.unmaximize()
-      return false
-    }
-    win.maximize()
-    return true
+    return toggleWindowFill(win)
+  })
+
+  ipcMain.handle(
+    'window:restoreForDrag',
+    (event, cursorX: number, cursorY: number) => {
+      const win = windowFromEvent(event)
+      if (!win) return false
+      return restoreWindowForDrag(win, cursorX, cursorY)
+    },
+  )
+
+  ipcMain.on('window:dragTo', (event, cursorX: number, cursorY: number) => {
+    const win = windowFromEvent(event)
+    if (win) dragWindowTo(win, cursorX, cursorY)
+  })
+
+  ipcMain.handle('window:endDrag', (event) => {
+    const win = windowFromEvent(event)
+    if (win) endWindowDrag(win)
   })
 
   ipcMain.handle('window:close', (event) => {
@@ -1345,10 +1904,7 @@ function registerIpc() {
   ipcMain.handle('window:isFullscreen', (event) => {
     const win = windowFromEvent(event)
     if (!win) return false
-    if (win === mainWindow) {
-      return appFullscreen || win.isFullScreen()
-    }
-    return win.isMaximized()
+    return win.isMaximized() || win.isFullScreen()
   })
 }
 

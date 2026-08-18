@@ -1,4 +1,4 @@
-import type { ConnectionFolder, SavedConnection } from '../types'
+import type { ConnectionFolder, ConnectionProtocol, SavedConnection } from '../types'
 import type { ImportResult } from './types'
 
 function decodeEntities(text: string): string {
@@ -37,10 +37,12 @@ function decodePass(block: string): string {
   return raw
 }
 
-/** FileZilla Protocol: 0=FTP, 1=SFTP, 3=FTPS, … — import SFTP / SSH-like. */
-function isSshProtocol(protocol: string): boolean {
+/** FileZilla Protocol: 0=FTP, 1=SFTP, 3=FTPS, … */
+function protocolToConnectionProtocol(protocol: string): ConnectionProtocol | null {
   const n = Number.parseInt(protocol, 10)
-  return n === 1 || protocol.toLowerCase() === 'sftp'
+  if (n === 1 || protocol.toLowerCase() === 'sftp') return 'sftp'
+  if (n === 0 || protocol.toLowerCase() === 'ftp') return 'ftp'
+  return null
 }
 
 export function importFileZillaXml(
@@ -55,7 +57,8 @@ export function importFileZillaXml(
 
   for (const block of serverBlocks) {
     const protocol = tagValue(block, 'Protocol') || '0'
-    if (!isSshProtocol(protocol)) continue
+    const connProtocol = protocolToConnectionProtocol(protocol)
+    if (!connProtocol) continue
 
     const host = tagValue(block, 'Host')
     if (!host) continue
@@ -106,6 +109,7 @@ export function importFileZillaXml(
       password,
       privateKeyPath: hasKey ? keyPath : undefined,
       folderId,
+      protocol: connProtocol,
       createdAt: now,
       updatedAt: now,
     })

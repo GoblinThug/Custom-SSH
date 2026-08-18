@@ -19,6 +19,8 @@ export type MessageKey =
   | 'hotkeyInterrupt'
   | 'hotkeySuspend'
   | 'fileEdit'
+  | 'fileViewImage'
+  | 'fileOpenArchive'
   | 'fileDownload'
   | 'fileDownloadFolder'
   | 'fileDownloadSelected'
@@ -87,6 +89,28 @@ export type MessageKey =
   | 'editorSaveAndClose'
   | 'editorDiscard'
   | 'editorKeepEditing'
+  | 'viewerZoomIn'
+  | 'viewerZoomOut'
+  | 'viewerZoomReset'
+  | 'viewerFullscreen'
+  | 'viewerDownload'
+  | 'viewerLoadFailed'
+  | 'viewerImageMeta'
+  | 'archiveExtract'
+  | 'archiveExtractSelected'
+  | 'archiveUp'
+  | 'archiveEmpty'
+  | 'archiveLoadFailed'
+  | 'archiveTooLarge'
+  | 'archiveUnsupported'
+  | 'archivePasswordNeeded'
+  | 'archiveExtractOk'
+  | 'archiveExtractFailed'
+  | 'archiveOpenFailed'
+  | 'archiveNameCol'
+  | 'archiveSizeCol'
+  | 'archiveItems'
+  | 'archiveRoot'
   | 'editorFind'
   | 'editorFindPlaceholder'
   | 'editorReplace'
@@ -184,6 +208,9 @@ export type MessageKey =
   | 'closeActionAsk'
   | 'closeActionTray'
   | 'closeActionQuit'
+  | 'protocolSsh'
+  | 'protocolSftp'
+  | 'protocolFtp'
   | 'settingsDone'
   | 'settingsAbout'
   | 'settingsGithub'
@@ -274,6 +301,7 @@ export type MessageKey =
   | 'errPrivateKeyPassphrase'
   | 'errSessionLost'
   | 'errSessionNotFound'
+  | 'errFtpNotSupported'
   | 'errShellFailed'
   | 'errPingFailed'
   | 'errPermissionDenied'
@@ -320,6 +348,8 @@ const en: Record<MessageKey, string> = {
   hotkeyInterrupt: 'Interrupt (SIGINT)',
   hotkeySuspend: 'Suspend process',
   fileEdit: 'Edit file',
+  fileViewImage: 'View image',
+  fileOpenArchive: 'Open archive',
   fileDownload: 'Download',
   fileDownloadFolder: 'Download folder',
   fileDownloadSelected: 'Download selected ({count})',
@@ -388,6 +418,28 @@ const en: Record<MessageKey, string> = {
   editorSaveAndClose: 'Save and close',
   editorDiscard: 'Close without saving',
   editorKeepEditing: 'Cancel',
+  viewerZoomIn: 'Zoom in',
+  viewerZoomOut: 'Zoom out',
+  viewerZoomReset: '100%',
+  viewerFullscreen: 'Full screen',
+  viewerDownload: 'Download',
+  viewerLoadFailed: 'Failed to open image',
+  viewerImageMeta: '{width} × {height}',
+  archiveExtract: 'Extract',
+  archiveExtractSelected: 'Extract selected',
+  archiveUp: 'Up',
+  archiveEmpty: 'This folder is empty',
+  archiveLoadFailed: 'Failed to open archive',
+  archiveTooLarge: 'Archive is larger than 80 MB',
+  archiveUnsupported: 'This archive type is not supported',
+  archivePasswordNeeded: 'This archive is password-protected',
+  archiveExtractOk: 'Extracted to {path}',
+  archiveExtractFailed: 'Failed to extract',
+  archiveOpenFailed: 'Failed to open file',
+  archiveNameCol: 'Name',
+  archiveSizeCol: 'Size',
+  archiveItems: '{count} items',
+  archiveRoot: 'Archive',
   editorFind: 'Find',
   editorFindPlaceholder: 'Text to find…',
   editorReplace: 'Replace with',
@@ -486,6 +538,9 @@ const en: Record<MessageKey, string> = {
   closeActionAsk: 'Always ask',
   closeActionTray: 'Minimize to tray',
   closeActionQuit: 'Quit',
+  protocolSsh: 'SSH',
+  protocolSftp: 'SFTP',
+  protocolFtp: 'FTP',
   settingsDone: 'Done',
   settingsAbout: 'About',
   settingsGithub: 'GitHub repository',
@@ -583,6 +638,8 @@ const en: Record<MessageKey, string> = {
   errPrivateKeyPassphrase: 'Wrong passphrase for the private key.',
   errSessionLost: 'SSH session was lost.',
   errSessionNotFound: 'SSH session is no longer available. Reconnect.',
+  errFtpNotSupported:
+    'FTP is not supported yet in this build. Use an SSH/SFTP port instead.',
   errShellFailed: 'Failed to open a terminal shell.',
   errPingFailed: 'Server did not respond to keepalive.',
   errPermissionDenied: 'Permission denied.',
@@ -631,6 +688,8 @@ const ru: Record<MessageKey, string> = {
   hotkeyInterrupt: 'Прервать (SIGINT)',
   hotkeySuspend: 'Приостановить процесс',
   fileEdit: 'Редактировать',
+  fileViewImage: 'Просмотр изображения',
+  fileOpenArchive: 'Открыть архив',
   fileDownload: 'Скачать',
   fileDownloadFolder: 'Скачать папку',
   fileDownloadSelected: 'Скачать выбранные ({count})',
@@ -700,6 +759,28 @@ const ru: Record<MessageKey, string> = {
   editorSaveAndClose: 'Сохранить и закрыть',
   editorDiscard: 'Закрыть без сохранения',
   editorKeepEditing: 'Отмена',
+  viewerZoomIn: 'Увеличить',
+  viewerZoomOut: 'Уменьшить',
+  viewerZoomReset: '100%',
+  viewerFullscreen: 'На весь экран',
+  viewerDownload: 'Скачать',
+  viewerLoadFailed: 'Не удалось открыть изображение',
+  viewerImageMeta: '{width} × {height}',
+  archiveExtract: 'Извлечь',
+  archiveExtractSelected: 'Извлечь выбранные',
+  archiveUp: 'Вверх',
+  archiveEmpty: 'Эта папка пуста',
+  archiveLoadFailed: 'Не удалось открыть архив',
+  archiveTooLarge: 'Архив больше 80 МБ',
+  archiveUnsupported: 'Этот тип архива не поддерживается',
+  archivePasswordNeeded: 'Архив защищён паролем',
+  archiveExtractOk: 'Извлечено в {path}',
+  archiveExtractFailed: 'Не удалось извлечь',
+  archiveOpenFailed: 'Не удалось открыть файл',
+  archiveNameCol: 'Имя',
+  archiveSizeCol: 'Размер',
+  archiveItems: 'Элементов: {count}',
+  archiveRoot: 'Архив',
   editorFind: 'Найти',
   editorFindPlaceholder: 'Что искать…',
   editorReplace: 'Заменить на',
@@ -798,6 +879,9 @@ const ru: Record<MessageKey, string> = {
   closeActionAsk: 'Всегда спрашивать',
   closeActionTray: 'Сворачивать',
   closeActionQuit: 'Закрывать',
+  protocolSsh: 'SSH',
+  protocolSftp: 'SFTP',
+  protocolFtp: 'FTP',
   settingsDone: 'Готово',
   settingsAbout: 'О приложении',
   settingsGithub: 'Репозиторий на GitHub',
@@ -896,6 +980,7 @@ const ru: Record<MessageKey, string> = {
   errPrivateKeyPassphrase: 'Неверная парольная фраза для приватного ключа.',
   errSessionLost: 'SSH-сессия была потеряна.',
   errSessionNotFound: 'SSH-сессия больше недоступна. Подключитесь снова.',
+  errFtpNotSupported: 'FTP пока не поддерживается в этой сборке. Используйте SSH/SFTP порт.',
   errShellFailed: 'Не удалось открыть терминальную оболочку.',
   errPingFailed: 'Сервер не ответил на проверку связи.',
   errPermissionDenied: 'Недостаточно прав.',
