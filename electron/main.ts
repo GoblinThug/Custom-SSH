@@ -661,6 +661,7 @@ async function openEditorWindow(sessionId: string, remotePath: string) {
 
 function emitWindowState(win: BrowserWindow) {
   if (win.isDestroyed()) return
+  syncFilledResizeLock(win)
   const filled = win.isMaximized() || win.isFullScreen()
   win.webContents.send('window:state', {
     maximized: win.isMaximized(),
@@ -671,10 +672,41 @@ function emitWindowState(win: BrowserWindow) {
 const WM_NCLBUTTONDOWN = 0x00A1
 const WM_EXITSIZEMOVE = 0x0232
 const HT_CAPTION = 2
+const HT_SIZE = 4
+const HT_LEFT = 10
+const HT_BOTTOMRIGHT = 17
+const HT_BORDER = 18
 const SNAP_EDGE_PX = 14
 
 const lastNormalBounds = new WeakMap<BrowserWindow, Electron.Rectangle>()
 const dragGrab = new WeakMap<BrowserWindow, { dx: number; dy: number }>()
+const restoringForDrag = new WeakSet<BrowserWindow>()
+const resizeLockBusy = new WeakSet<BrowserWindow>()
+
+function isSizeHitTest(hit: number) {
+  return (
+    hit === HT_SIZE ||
+    hit === HT_BORDER ||
+    (hit >= HT_LEFT && hit <= HT_BOTTOMRIGHT)
+  )
+}
+
+function shouldLockResize(win: BrowserWindow) {
+  if (dragGrab.has(win) || restoringForDrag.has(win)) return false
+  return isFilledWindow(win) || win.isMaximized() || win.isFullScreen()
+}
+
+function syncFilledResizeLock(win: BrowserWindow) {
+  if (win.isDestroyed() || resizeLockBusy.has(win)) return
+  const allowResize = !shouldLockResize(win)
+  if (win.isResizable() === allowResize) return
+  resizeLockBusy.add(win)
+  try {
+    win.setResizable(allowResize)
+  } finally {
+    resizeLockBusy.delete(win)
+  }
+}
 
 function readWinParam(value: Buffer | number): number {
   if (typeof value === 'number') return value
@@ -745,17 +777,26 @@ function restoreWindowForDrag(
     1,
     Math.max(0, (cursorX - maxBounds.x) / Math.max(maxBounds.width, 1)),
   )
-  if (win.isFullScreen()) win.setFullScreen(false)
-  if (win.isMaximized()) win.unmaximize()
-  const work = screen.getDisplayNearestPoint({ x: cursorX, y: cursorY }).workArea
-  const x = Math.round(cursorX - normal.width * ratio)
-  const y = Math.max(work.y, cursorY - 20)
-  win.setBounds({
-    x: Math.min(Math.max(x, work.x - normal.width + 80), work.x + work.width - 80),
-    y,
-    width: normal.width,
-    height: normal.height,
-  })
+  restoringForDrag.add(win)
+  try {
+    if (!win.isResizable()) win.setResizable(true)
+    if (win.isFullScreen()) win.setFullScreen(false)
+    if (win.isMaximized()) win.unmaximize()
+    const work = screen.getDisplayNearestPoint({ x: cursorX, y: cursorY }).workArea
+    const x = Math.round(cursorX - normal.width * ratio)
+    const y = Math.max(work.y, cursorY - 20)
+    win.setBounds({
+      x: Math.min(
+        Math.max(x, work.x - normal.width + 80),
+        work.x + work.width - 80,
+      ),
+      y,
+      width: normal.width,
+      height: normal.height,
+    })
+  } finally {
+    restoringForDrag.delete(win)
+  }
   const placed = win.getBounds()
   dragGrab.set(win, { dx: cursorX - placed.x, dy: cursorY - placed.y })
   emitWindowState(win)
@@ -814,7 +855,11 @@ function attachWindowsSnap(win: BrowserWindow) {
   win.on('resized', () => rememberNormalBounds(win))
 
   win.hookWindowMessage(WM_NCLBUTTONDOWN, (wParam) => {
-    if (readWinParam(wParam) !== HT_CAPTION) return
+    const hit = readWinParam(wParam)
+    if (isSizeHitTest(hit) && isFilledWindow(win)) {
+      return true
+    }
+    if (hit !== HT_CAPTION) return
     const cursor = screen.getCursorScreenPoint()
     restoreWindowForDrag(win, cursor.x, cursor.y)
   })
@@ -837,7 +882,14 @@ function bindWindowChrome(win: BrowserWindow) {
   win.on('unmaximize', emit)
   win.on('enter-full-screen', emit)
   win.on('leave-full-screen', emit)
+  win.on('will-resize', (event) => {
+    if (dragGrab.has(win) || restoringForDrag.has(win)) return
+    if (isFilledWindow(win) || win.isMaximized() || win.isFullScreen()) {
+      event.preventDefault()
+    }
+  })
   attachWindowsSnap(win)
+  syncFilledResizeLock(win)
 }
 
 function appWindowOptions(
