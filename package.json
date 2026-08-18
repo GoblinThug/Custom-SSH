@@ -1,6 +1,6 @@
 {
   "name": "custom_ssh",
-  "version": "4.1.4",
+  "version": "4.1.5",
   "description": "Desktop SSH client for Windows, macOS and Linux — terminal, SFTP, editor, saved connections",
   "author": "Goblin_Thug",
   "main": "dist-electron/main.js",

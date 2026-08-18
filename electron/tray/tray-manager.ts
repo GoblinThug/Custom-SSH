@@ -36,6 +36,8 @@ let tray: Tray | null = null
 let trayPopup: BrowserWindow | null = null
 let trayPopupShown = false
 let ignoreTrayClickUntil = 0
+let ignoreTrayBlurUntil = 0
+let trayPopupOpening = false
 let trayBlurHideTimer: ReturnType<typeof setTimeout> | null = null
 let trayPopupState: TrayPopupState = { sessions: [], connections: [] }
 let lastTrayAnchor: Electron.Rectangle | null = null
@@ -263,6 +265,8 @@ async function ensureTrayPopup() {
     backgroundColor: '#00000000',
     roundedCorners: false,
     focusable: true,
+    // NSPanel can appear from the menu bar without fighting the app window.
+    ...(process.platform === 'darwin' ? { type: 'panel' as const } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -273,12 +277,19 @@ async function ensureTrayPopup() {
 
   trayPopup = win
   win.setMenu(null)
+  if (process.platform === 'darwin') {
+    win.setAlwaysOnTop(true, 'floating')
+    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+    win.setWindowButtonVisibility(false)
+  }
   win.on('blur', () => {
     if (!trayPopupShown || !trayPopup || trayPopup.isDestroyed()) return
+    if (Date.now() < ignoreTrayBlurUntil) return
     // Delay hide so a tray-icon click can cancel it and keep the menu open.
     clearTrayBlurHideTimer()
     trayBlurHideTimer = setTimeout(() => {
       trayBlurHideTimer = null
+      if (Date.now() < ignoreTrayBlurUntil) return
       hideTrayPopup()
       ignoreTrayClickUntil = Date.now() + 400
     }, 180)
@@ -314,19 +325,35 @@ function refreshTrayConnectionsFromStore() {
   }
 }
 
+function isTrayPopupVisible() {
+  return (
+    trayPopupShown &&
+    !!trayPopup &&
+    !trayPopup.isDestroyed() &&
+    trayPopup.isVisible()
+  )
+}
+
 /** Tray click only opens. If already open, another tray click does nothing. */
 async function openTrayPopupFromTray(clickBounds?: Electron.Rectangle) {
   clearTrayBlurHideTimer()
-  if (Date.now() < ignoreTrayClickUntil) return
-  if (trayPopupShown) return
+  if (trayPopupOpening) return
+  if (Date.now() < ignoreTrayClickUntil && isTrayPopupVisible()) return
+  if (isTrayPopupVisible()) return
 
-  refreshTrayConnectionsFromStore()
-  const win = await ensureTrayPopup()
-  broadcastTrayState()
-  positionTrayPopup(win, win.getBounds().height, clickBounds)
-  trayPopupShown = true
-  win.show()
-  win.focus()
+  trayPopupOpening = true
+  try {
+    refreshTrayConnectionsFromStore()
+    const win = await ensureTrayPopup()
+    broadcastTrayState()
+    positionTrayPopup(win, win.getBounds().height, clickBounds)
+    ignoreTrayBlurUntil = Date.now() + 400
+    trayPopupShown = true
+    win.show()
+    win.focus()
+  } finally {
+    trayPopupOpening = false
+  }
 }
 
 /** Menu-bar status items are ~22pt. A 512px app icon is drawn 1:1 on macOS. */
@@ -334,34 +361,22 @@ function resolveTrayIcon() {
   const source = resolveAppIcon()
   if (!source || source.isEmpty()) return nativeImage.createEmpty()
   if (process.platform !== 'darwin') return source
-
-  const pointSize = 22
-  const icon = nativeImage.createEmpty()
-  for (const scale of [1, 2] as const) {
-    const size = pointSize * scale
-    icon.addRepresentation({
-      scaleFactor: scale,
-      width: size,
-      height: size,
-      buffer: source.resize({ width: size, height: size, quality: 'best' }).toPNG(),
-    })
-  }
-  return icon
+  return source.resize({ width: 22, height: 22, quality: 'best' })
 }
 
 export function ensureTray() {
   if (tray) return
   tray = new Tray(resolveTrayIcon())
   tray.setToolTip('Custom SSH')
+  if (process.platform === 'darwin') {
+    // Otherwise macOS delays `click` waiting for a double-click, or swallows it.
+    tray.setIgnoreDoubleClickEvents(true)
+  }
   tray.on('click', (_event, bounds) => {
     void openTrayPopupFromTray(bounds)
   })
   tray.on('right-click', (_event, bounds) => {
     void openTrayPopupFromTray(bounds)
-  })
-  tray.on('double-click', () => {
-    showMainWindow()
-    destroyTrayPopup()
   })
 }
 
