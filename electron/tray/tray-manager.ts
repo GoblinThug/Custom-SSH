@@ -329,10 +329,29 @@ async function openTrayPopupFromTray(clickBounds?: Electron.Rectangle) {
   win.focus()
 }
 
+/** Menu-bar status items are ~22pt. A 512px app icon is drawn 1:1 on macOS. */
+function resolveTrayIcon() {
+  const source = resolveAppIcon()
+  if (!source || source.isEmpty()) return nativeImage.createEmpty()
+  if (process.platform !== 'darwin') return source
+
+  const pointSize = 22
+  const icon = nativeImage.createEmpty()
+  for (const scale of [1, 2] as const) {
+    const size = pointSize * scale
+    icon.addRepresentation({
+      scaleFactor: scale,
+      width: size,
+      height: size,
+      buffer: source.resize({ width: size, height: size, quality: 'best' }).toPNG(),
+    })
+  }
+  return icon
+}
+
 export function ensureTray() {
   if (tray) return
-  const icon = resolveAppIcon()
-  tray = new Tray(icon ?? nativeImage.createEmpty())
+  tray = new Tray(resolveTrayIcon())
   tray.setToolTip('Custom SSH')
   tray.on('click', (_event, bounds) => {
     void openTrayPopupFromTray(bounds)
