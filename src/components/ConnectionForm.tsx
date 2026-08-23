@@ -1,6 +1,7 @@
 import { folderColorValue } from '../folderColors'
 import { useSettings } from '../i18n/SettingsContext'
 import type { ConnectionDraft, ConnectionFolder } from '../types'
+import { PasswordField } from './PasswordField'
 import { SelectDropdown } from './SelectDropdown'
 
 type Props = {
@@ -151,17 +152,17 @@ export function ConnectionForm({
         </div>
 
         {draft.authMethod === 'password' ? (
-          <div className="field">
-            <label htmlFor="password">{t('password')}</label>
-            <input
-              id="password"
-              type="password"
-              value={draft.password}
-              onChange={(e) => update('password', e.target.value)}
-              placeholder={draft.id ? t('passwordKeep') : '••••••••'}
-              autoComplete="new-password"
-            />
-          </div>
+          <PasswordField
+            key={`password-${draft.id ?? 'new'}`}
+            id="password"
+            label={t('password')}
+            value={draft.password}
+            onChange={(e) => update('password', e.target.value)}
+            placeholder={
+              draft.id && !draft.password ? t('passwordKeep') : '••••••••'
+            }
+            autoComplete="new-password"
+          />
         ) : (
           <>
             <div className="field-inline">
@@ -178,17 +179,17 @@ export function ConnectionForm({
                 {t('browse')}
               </button>
             </div>
-            <div className="field">
-              <label htmlFor="passphrase">{t('passphrase')}</label>
-              <input
-                id="passphrase"
-                type="password"
-                value={draft.passphrase}
-                onChange={(e) => update('passphrase', e.target.value)}
-                placeholder={draft.id ? t('passphraseKeep') : undefined}
-                autoComplete="new-password"
-              />
-            </div>
+            <PasswordField
+              key={`passphrase-${draft.id ?? 'new'}`}
+              id="passphrase"
+              label={t('passphrase')}
+              value={draft.passphrase}
+              onChange={(e) => update('passphrase', e.target.value)}
+              placeholder={
+                draft.id && !draft.passphrase ? t('passphraseKeep') : undefined
+              }
+              autoComplete="new-password"
+            />
           </>
         )}
 

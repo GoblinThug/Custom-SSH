@@ -163,6 +163,8 @@ export const ru: Record<MessageKey, string> = {
   namePlaceholder: 'Production VPS',
   passwordKeep: 'Оставьте пустым, чтобы сохранить текущий пароль',
   passphraseKeep: 'Оставьте пустым, чтобы сохранить текущую',
+  showPassword: 'Показать пароль',
+  hidePassword: 'Скрыть пароль',
   untitledConnection: 'Без названия',
   configureHost: 'Укажите хост, чтобы начать',
   directoryTree: 'Дерево каталогов',

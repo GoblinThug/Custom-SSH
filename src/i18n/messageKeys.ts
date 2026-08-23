@@ -160,6 +160,8 @@ export type MessageKey =
   | 'namePlaceholder'
   | 'passwordKeep'
   | 'passphraseKeep'
+  | 'showPassword'
+  | 'hidePassword'
   | 'untitledConnection'
   | 'configureHost'
   | 'directoryTree'

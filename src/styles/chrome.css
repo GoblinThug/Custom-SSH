@@ -527,6 +527,55 @@ html.is-dragging-window .titlebar__drag {
   appearance: textfield;
 }
 
+.password-field {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
+.field .password-field__input {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  height: 38px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  padding: 0 40px 0 12px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.field .password-field__input:focus {
+  border-color: rgba(10, 132, 255, 0.55);
+  background-color: var(--bg-input-focus);
+}
+
+.password-field__toggle {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.password-field__toggle:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+.password-field__toggle[aria-pressed='true'] {
+  color: var(--accent);
+}
+
 .field input[type='number']::-webkit-outer-spin-button,
 .field input[type='number']::-webkit-inner-spin-button {
   -webkit-appearance: none;

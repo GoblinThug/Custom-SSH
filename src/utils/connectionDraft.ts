@@ -16,9 +16,9 @@ export function toDraft(connection?: SavedConnection | null): ConnectionDraft {
     port: connection.port,
     username: connection.username,
     authMethod: connection.authMethod,
-    password: '',
+    password: connection.password ?? '',
     privateKeyPath: connection.privateKeyPath ?? '',
-    passphrase: '',
+    passphrase: connection.passphrase ?? '',
     folderId: connection.folderId ?? null,
   }
 }

@@ -162,6 +162,8 @@ export const en: Record<MessageKey, string> = {
   namePlaceholder: 'Production VPS',
   passwordKeep: 'Leave empty to keep saved password',
   passphraseKeep: 'Leave empty to keep saved',
+  showPassword: 'Show password',
+  hidePassword: 'Hide password',
   untitledConnection: 'Untitled connection',
   configureHost: 'Configure a host to begin',
   directoryTree: 'Directory tree',

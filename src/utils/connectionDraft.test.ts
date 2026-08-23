@@ -13,7 +13,7 @@ describe('connectionDraft', () => {
     expect(toDraft()).toEqual(emptyDraft())
   })
 
-  it('toDraft copies fields and clears secrets', () => {
+  it('toDraft copies fields including secrets', () => {
     const draft = toDraft({
       id: 'c1',
       name: 'Prod',
@@ -22,12 +22,13 @@ describe('connectionDraft', () => {
       username: 'root',
       authMethod: 'password',
       password: 'secret',
+      passphrase: 'key-pass',
       folderId: 'f1',
       createdAt: '2020-01-01',
       updatedAt: '2020-01-01',
     })
-    expect(draft.password).toBe('')
-    expect(draft.passphrase).toBe('')
+    expect(draft.password).toBe('secret')
+    expect(draft.passphrase).toBe('key-pass')
     expect(draft.host).toBe('example.com')
     expect(draft.folderId).toBe('f1')
   })
