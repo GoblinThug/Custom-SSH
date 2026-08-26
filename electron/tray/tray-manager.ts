@@ -1,14 +1,16 @@
-import path from 'node:path'
 import {
+  app,
   BrowserWindow,
-  nativeImage,
-  screen,
+  Menu,
   Tray,
+  nativeImage,
+  type MenuItemConstructorOptions,
 } from 'electron'
 import { loadWorkspace } from '../store'
-import { loadRendererPage } from '../load-renderer-page'
-import { mainWindow } from '../app-context'
+import { loadSettings } from '../settings-store'
+import { mainWindow, setIsQuitting } from '../app-context'
 import { resolveAppIcon } from '../window-chrome'
+import { checkForUpdatesUser } from '../updater'
 
 export type TraySessionInfo = {
   sessionId: string
@@ -27,22 +29,16 @@ export type TrayConnectionInfo = {
   folderColor?: string | null
 }
 
-export type TrayPopupState = {
+export type TrayState = {
   sessions: TraySessionInfo[]
   connections: TrayConnectionInfo[]
 }
 
-let tray: Tray | null = null
-let trayPopup: BrowserWindow | null = null
-let trayPopupShown = false
-let ignoreTrayClickUntil = 0
-let ignoreTrayBlurUntil = 0
-let trayPopupOpening = false
-let trayBlurHideTimer: ReturnType<typeof setTimeout> | null = null
-let trayPopupState: TrayPopupState = { sessions: [], connections: [] }
-let lastTrayAnchor: Electron.Rectangle | null = null
+/** @deprecated use TrayState */
+export type TrayPopupState = TrayState
 
-type PanelEdge = 'top' | 'bottom' | 'left' | 'right'
+let tray: Tray | null = null
+let trayState: TrayState = { sessions: [], connections: [] }
 
 type TrayDeps = {
   createMainWindow: () => void
@@ -50,93 +46,42 @@ type TrayDeps = {
 
 let deps: TrayDeps = { createMainWindow: () => {} }
 
+const labels = {
+  en: {
+    openApp: 'Open Custom SSH',
+    settings: 'Settings…',
+    checkUpdates: 'Check for updates',
+    activeSessions: 'Active sessions',
+    disconnect: 'Disconnect',
+    noSessions: 'No active sessions',
+    quickConnect: 'Quick connect',
+    noConnections: 'No saved connections',
+    quit: 'Quit',
+    connected: 'Custom SSH — connected',
+    idle: 'Custom SSH',
+  },
+  ru: {
+    openApp: 'Открыть Custom SSH',
+    settings: 'Настройки…',
+    checkUpdates: 'Проверить обновления',
+    activeSessions: 'Активные сессии',
+    disconnect: 'Отключить',
+    noSessions: 'Нет активных сессий',
+    quickConnect: 'Быстрое подключение',
+    noConnections: 'Нет сохранённых подключений',
+    quit: 'Выход',
+    connected: 'Custom SSH — подключено',
+    idle: 'Custom SSH',
+  },
+} as const
+
+function t() {
+  const locale = loadSettings().locale === 'en' ? 'en' : 'ru'
+  return labels[locale]
+}
+
 export function initTrayManager(trayDeps: TrayDeps) {
   deps = trayDeps
-}
-function clampTrayCoord(value: number, min: number, max: number) {
-  if (max < min) return min
-  return Math.min(Math.max(value, min), max)
-}
-
-/** Detect dock/taskbar/menu-bar side from display workArea insets. */
-function panelEdgeFromWorkArea(
-  bounds: Electron.Rectangle,
-  work: Electron.Rectangle,
-): PanelEdge | null {
-  const gaps: Array<[PanelEdge, number]> = [
-    ['top', work.y - bounds.y],
-    ['left', work.x - bounds.x],
-    ['bottom', bounds.y + bounds.height - (work.y + work.height)],
-    ['right', bounds.x + bounds.width - (work.x + work.width)],
-  ]
-  gaps.sort((a, b) => b[1] - a[1])
-  return gaps[0][1] > 2 ? gaps[0][0] : null
-}
-
-/** When workArea has no inset (auto-hide / Linux), infer from tray/cursor location. */
-function panelEdgeFromAnchor(
-  bounds: Electron.Rectangle,
-  anchorX: number,
-  anchorY: number,
-): PanelEdge {
-  const relX = (anchorX - bounds.x) / Math.max(bounds.width, 1)
-  const relY = (anchorY - bounds.y) / Math.max(bounds.height, 1)
-  const dist: Array<[PanelEdge, number]> = [
-    ['top', relY],
-    ['bottom', 1 - relY],
-    ['left', relX],
-    ['right', 1 - relX],
-  ]
-  dist.sort((a, b) => a[1] - b[1])
-  return dist[0][0]
-}
-
-function resolveTrayAnchor(
-  preferred?: Electron.Rectangle | null,
-): Electron.Rectangle {
-  const cursor = screen.getCursorScreenPoint()
-  const candidates = [preferred, lastTrayAnchor, tray?.getBounds() ?? null]
-  for (const box of candidates) {
-    if (box && box.width > 0 && box.height > 0) {
-      lastTrayAnchor = box
-      return box
-    }
-  }
-  // Linux (and rare Win/mac glitches): getBounds is empty — fake a 1×1 at cursor.
-  const fallback = { x: cursor.x, y: cursor.y, width: 1, height: 1 }
-  lastTrayAnchor = fallback
-  return fallback
-}
-
-function clearTrayBlurHideTimer() {
-  if (!trayBlurHideTimer) return
-  clearTimeout(trayBlurHideTimer)
-  trayBlurHideTimer = null
-}
-
-export function hideTrayPopup() {
-  clearTrayBlurHideTimer()
-  trayPopupShown = false
-  if (!trayPopup || trayPopup.isDestroyed()) return
-  trayPopup.hide()
-}
-
-export function destroyTrayPopup() {
-  clearTrayBlurHideTimer()
-  trayPopupShown = false
-  if (!trayPopup || trayPopup.isDestroyed()) {
-    trayPopup = null
-    return
-  }
-  trayPopup.destroy()
-  trayPopup = null
-}
-
-export function destroyTray() {
-  destroyTrayPopup()
-  if (!tray) return
-  tray.destroy()
-  tray = null
 }
 
 export function showMainWindow() {
@@ -149,214 +94,133 @@ export function showMainWindow() {
   mainWindow.focus()
 }
 
-function broadcastTrayState() {
-  if (trayPopup && !trayPopup.isDestroyed()) {
-    trayPopup.webContents.send('tray:state', trayPopupState)
+function sendToMain(channel: string, ...args: unknown[]) {
+  showMainWindow()
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(channel, ...args)
   }
 }
 
-export function setTrayPopupState(next: TrayPopupState) {
-  trayPopupState = next
-  const online = next.sessions.some((session) => session.status === 'connected')
-  tray?.setToolTip(online ? 'Custom SSH — connected' : 'Custom SSH')
-  broadcastTrayState()
+function quitApp() {
+  setIsQuitting(true)
+  destroyTray()
+  for (const win of BrowserWindow.getAllWindows()) {
+    const flagged = win as BrowserWindow & { __forceClose?: boolean }
+    flagged.__forceClose = true
+  }
+  app.quit()
 }
 
-async function loadTrayPopupPage(win: BrowserWindow) {
-  await loadRendererPage(win, 'tray')
-}
+function buildContextMenu() {
+  const text = t()
+  const activeSessions = trayState.sessions.filter(
+    (session) =>
+      session.status === 'connected' ||
+      session.status === 'connecting' ||
+      session.status === 'reconnecting',
+  )
+  const connections =
+    trayState.connections.length > 0
+      ? trayState.connections
+      : loadWorkspace().connections.map((item) => ({
+          id: item.id,
+          name: item.name,
+          host: item.host,
+          port: item.port,
+          username: item.username,
+          folderColor: null as string | null,
+        }))
 
-export function positionTrayPopup(
-  win: BrowserWindow,
-  height: number,
-  preferredAnchor?: Electron.Rectangle | null,
-) {
-  // 300px card + horizontal padding for rounded shadow bleed.
-  const width = 328
-  const gap = 8
-  const trayBox = resolveTrayAnchor(preferredAnchor)
-  const anchorX = trayBox.x + trayBox.width / 2
-  const anchorY = trayBox.y + trayBox.height / 2
-  const display = screen.getDisplayNearestPoint({
-    x: Math.round(anchorX),
-    y: Math.round(anchorY),
-  })
-  const work = display.workArea
-  const bounds = display.bounds
+  const sessionItems: MenuItemConstructorOptions[] =
+    activeSessions.length > 0
+      ? activeSessions.map((session) => ({
+          label: session.title?.trim() || session.label,
+          submenu: [
+            {
+              label: text.disconnect,
+              click: () => {
+                if (mainWindow && !mainWindow.isDestroyed()) {
+                  mainWindow.webContents.send(
+                    'tray:disconnect',
+                    session.sessionId,
+                  )
+                }
+              },
+            },
+          ],
+        }))
+      : [{ label: text.noSessions, enabled: false }]
 
-  // Prefer where the tray icon actually is. Largest workArea inset is wrong on
-  // macOS (Dock often bigger than the menu bar while the icon sits at the top).
-  let edge = panelEdgeFromAnchor(bounds, anchorX, anchorY)
-  const workEdge = panelEdgeFromWorkArea(bounds, work)
-  if (workEdge && workEdge === edge) {
-    // Confirmed by reserved strip.
-  } else if (
-    workEdge &&
-    // Only trust workArea when the icon sits clearly inside that strip.
-    ((workEdge === 'top' && trayBox.y + trayBox.height <= work.y + 4) ||
-      (workEdge === 'bottom' &&
-        trayBox.y >= work.y + work.height - 4) ||
-      (workEdge === 'left' && trayBox.x + trayBox.width <= work.x + 4) ||
-      (workEdge === 'right' && trayBox.x >= work.x + work.width - 4))
-  ) {
-    edge = workEdge
-  }
+  const connectItems: MenuItemConstructorOptions[] =
+    connections.length > 0
+      ? connections.slice(0, 20).map((item) => ({
+          label: item.name || `${item.username}@${item.host}`,
+          click: () => sendToMain('tray:quick-connect', item.id),
+        }))
+      : [{ label: text.noConnections, enabled: false }]
 
-  // macOS status items live in the menu bar even when detection is noisy.
-  if (process.platform === 'darwin') {
-    const nearTop = anchorY < bounds.y + Math.max(48, work.y - bounds.y + 24)
-    if (nearTop) edge = 'top'
-  }
-
-  // Minimum clearance under a visible macOS menu bar when workArea.y is 0.
-  const topSafe =
-    process.platform === 'darwin'
-      ? Math.max(work.y, bounds.y + 28)
-      : work.y
-
-  let x: number
-  let y: number
-  switch (edge) {
-    case 'top':
-      x = Math.round(anchorX - width / 2)
-      y = Math.round(Math.max(trayBox.y + trayBox.height, topSafe) + gap)
-      break
-    case 'bottom':
-      x = Math.round(anchorX - width / 2)
-      y = Math.round(trayBox.y - height - gap)
-      break
-    case 'left':
-      x = Math.round(trayBox.x + trayBox.width + gap)
-      y = Math.round(anchorY - height / 2)
-      break
-    case 'right':
-      x = Math.round(trayBox.x - width - gap)
-      y = Math.round(anchorY - height / 2)
-      break
-  }
-
-  const minX = work.x + gap
-  const maxX = work.x + work.width - width - gap
-  const minY = (edge === 'top' ? topSafe : work.y) + gap
-  const maxY = work.y + work.height - height - gap
-  x = clampTrayCoord(x, minX, maxX)
-  y = clampTrayCoord(y, minY, maxY)
-
-  win.setBounds({ x, y, width, height })
-}
-
-async function ensureTrayPopup() {
-  if (trayPopup && !trayPopup.isDestroyed()) return trayPopup
-
-  const win = new BrowserWindow({
-    width: 300,
-    height: 360,
-    show: false,
-    frame: false,
-    transparent: true,
-    resizable: false,
-    maximizable: false,
-    minimizable: false,
-    fullscreenable: false,
-    skipTaskbar: true,
-    alwaysOnTop: true,
-    // Native OS shadow is rectangular on Windows and fights CSS radius.
-    hasShadow: false,
-    backgroundColor: '#00000000',
-    roundedCorners: false,
-    focusable: true,
-    // NSPanel can appear from the menu bar without fighting the app window.
-    ...(process.platform === 'darwin' ? { type: 'panel' as const } : {}),
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
+  return Menu.buildFromTemplate([
+    {
+      label: text.openApp,
+      click: () => showMainWindow(),
     },
-  })
-
-  trayPopup = win
-  win.setMenu(null)
-  if (process.platform === 'darwin') {
-    win.setAlwaysOnTop(true, 'floating')
-    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
-    win.setWindowButtonVisibility(false)
-  }
-  win.on('blur', () => {
-    if (!trayPopupShown || !trayPopup || trayPopup.isDestroyed()) return
-    if (Date.now() < ignoreTrayBlurUntil) return
-    // Delay hide so a tray-icon click can cancel it and keep the menu open.
-    clearTrayBlurHideTimer()
-    trayBlurHideTimer = setTimeout(() => {
-      trayBlurHideTimer = null
-      if (Date.now() < ignoreTrayBlurUntil) return
-      hideTrayPopup()
-      ignoreTrayClickUntil = Date.now() + 400
-    }, 180)
-  })
-  win.on('closed', () => {
-    if (trayPopup === win) {
-      trayPopup = null
-      trayPopupShown = false
-    }
-  })
-
-  await loadTrayPopupPage(win)
-  return win
+    {
+      label: text.settings,
+      click: () => sendToMain('tray:open-settings'),
+    },
+    { type: 'separator' },
+    {
+      label: text.checkUpdates,
+      click: () => {
+        showMainWindow()
+        void checkForUpdatesUser()
+        sendToMain('tray:open-settings')
+      },
+    },
+    { type: 'separator' },
+    {
+      label: text.activeSessions,
+      submenu: sessionItems,
+    },
+    {
+      label: text.quickConnect,
+      submenu: connectItems,
+    },
+    { type: 'separator' },
+    {
+      label: text.quit,
+      click: () => quitApp(),
+    },
+  ])
 }
 
-function refreshTrayConnectionsFromStore() {
-  const workspace = loadWorkspace()
-  const folderColorById = new Map(
-    workspace.folders.map((folder) => [folder.id, folder.color] as const),
+function refreshTrayMenu() {
+  if (!tray) return
+  const online = trayState.sessions.some(
+    (session) => session.status === 'connected',
   )
-  trayPopupState = {
-    ...trayPopupState,
-    connections: workspace.connections.map((item) => ({
-      id: item.id,
-      name: item.name,
-      host: item.host,
-      port: item.port,
-      username: item.username,
-      folderColor: item.folderId
-        ? folderColorById.get(item.folderId) ?? null
-        : null,
-    })),
+  const text = t()
+  tray.setToolTip(online ? text.connected : text.idle)
+  tray.setContextMenu(buildContextMenu())
+}
+
+export function setTrayState(next: TrayState) {
+  trayState = {
+    sessions: Array.isArray(next?.sessions) ? next.sessions : [],
+    connections: Array.isArray(next?.connections) ? next.connections : [],
   }
+  refreshTrayMenu()
 }
 
-function isTrayPopupVisible() {
-  return (
-    trayPopupShown &&
-    !!trayPopup &&
-    !trayPopup.isDestroyed() &&
-    trayPopup.isVisible()
-  )
+export function setTrayPopupState(next: TrayState) {
+  setTrayState(next)
 }
 
-/** Tray click only opens. If already open, another tray click does nothing. */
-async function openTrayPopupFromTray(clickBounds?: Electron.Rectangle) {
-  clearTrayBlurHideTimer()
-  if (trayPopupOpening) return
-  if (Date.now() < ignoreTrayClickUntil && isTrayPopupVisible()) return
-  if (isTrayPopupVisible()) return
-
-  trayPopupOpening = true
-  try {
-    refreshTrayConnectionsFromStore()
-    const win = await ensureTrayPopup()
-    broadcastTrayState()
-    positionTrayPopup(win, win.getBounds().height, clickBounds)
-    ignoreTrayBlurUntil = Date.now() + 400
-    trayPopupShown = true
-    win.show()
-    win.focus()
-  } finally {
-    trayPopupOpening = false
-  }
+/** Rebuild labels after locale/settings change. */
+export function refreshTrayChrome() {
+  refreshTrayMenu()
 }
 
-/** Menu-bar status items are ~22pt. A 512px app icon is drawn 1:1 on macOS. */
 function resolveTrayIcon() {
   const source = resolveAppIcon()
   if (!source || source.isEmpty()) return nativeImage.createEmpty()
@@ -367,23 +231,23 @@ function resolveTrayIcon() {
 export function ensureTray() {
   if (tray) return
   tray = new Tray(resolveTrayIcon())
-  tray.setToolTip('Custom SSH')
-  if (process.platform === 'darwin') {
-    // Otherwise macOS delays `click` waiting for a double-click, or swallows it.
-    tray.setIgnoreDoubleClickEvents(true)
+  tray.setIgnoreDoubleClickEvents(true)
+  refreshTrayMenu()
+
+  // Left click opens the app on Windows. macOS/Linux use the context menu on click.
+  if (process.platform === 'win32') {
+    tray.on('click', () => {
+      showMainWindow()
+    })
   }
-  tray.on('click', (_event, bounds) => {
-    void openTrayPopupFromTray(bounds)
-  })
-  tray.on('right-click', (_event, bounds) => {
-    void openTrayPopupFromTray(bounds)
+  tray.on('double-click', () => {
+    showMainWindow()
   })
 }
 
 export function hideMainToTray() {
   if (!mainWindow || mainWindow.isDestroyed()) return
   ensureTray()
-  destroyTrayPopup()
   mainWindow.hide()
 }
 
@@ -391,6 +255,8 @@ export function hasTray(): boolean {
   return tray !== null
 }
 
-export function getTrayPopupState(): TrayPopupState {
-  return trayPopupState
+export function destroyTray() {
+  if (!tray) return
+  tray.destroy()
+  tray = null
 }

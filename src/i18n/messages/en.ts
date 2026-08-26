@@ -262,6 +262,14 @@ export const en: Record<MessageKey, string> = {
   updateErrorGeneric: 'Could not update. Download the latest build from Releases.',
   updateDevOnly: 'Updates work in the installed app build',
   updatePortable: 'Portable build does not support auto-update — use the installer',
+  updateHint:
+    'Checked automatically on launch. When a new version is found, a toast appears in the corner.',
+  updateCurrentVersion: 'Installed',
+  updateStatusIdle: 'Up to date',
+  updateStatusAvailable: 'Update available',
+  updateStatusDownloading: 'Downloading',
+  updateStatusReady: 'Ready to install',
+  updateStatusError: 'Update error',
   updatePromptTitle: 'Update available',
   updatePromptMessage:
     'A new version of CustomSSH is available. Do you want to download it now?',

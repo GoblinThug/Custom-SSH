@@ -213,6 +213,13 @@ export default function App() {
   }, [sessions.tabs.length])
 
   useEffect(() => {
+    return window.sshApi.onTrayOpenSettings(() => {
+      setHotkeysOpen(false)
+      setSettingsOpen(true)
+    })
+  }, [])
+
+  useEffect(() => {
     const traySessions = sessions.tabs
       .filter(
         (tab) =>

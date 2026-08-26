@@ -27,7 +27,7 @@ type UpdateStatus =
         | 'generic'
     }
 
-type PromptPhase = 'available' | 'downloading' | 'ready' | null
+type ToastPhase = 'available' | 'downloading' | 'ready' | null
 
 const LEGACY_SKIP_AVAILABLE_KEY = 'customssh.update.skipAvailable'
 const LEGACY_SKIP_READY_KEY = 'customssh.update.skipReady'
@@ -58,7 +58,7 @@ function clearLegacySkippedVersion() {
 
 function UpdateIcon() {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
       <path
         d="M12 4v10m0 0l-3.5-3.5M12 14l3.5-3.5"
         stroke="currentColor"
@@ -79,12 +79,14 @@ function UpdateIcon() {
 export function UpdatePrompt() {
   const { t } = useSettings()
   const [status, setStatus] = useState<UpdateStatus>({ state: 'idle' })
-  const [phase, setPhase] = useState<PromptPhase>(null)
+  const [phase, setPhase] = useState<ToastPhase>(null)
   const [busy, setBusy] = useState(false)
+  const [leaving, setLeaving] = useState(false)
   // Disk-backed via settings.json (localStorage alone was unreliable across relaunches).
   const skippedVersion = useRef<string | null>(null)
   const skipReady = useRef(false)
   const versionRef = useRef('')
+  const leaveTimer = useRef<number | null>(null)
 
   useEffect(() => {
     void window.sshApi.loadSettings().then((settings) => {
@@ -104,6 +106,30 @@ export function UpdatePrompt() {
   }, [])
 
   useEffect(() => {
+    return () => {
+      if (leaveTimer.current != null) window.clearTimeout(leaveTimer.current)
+    }
+  }, [])
+
+  const dismissToast = (persistSkip: boolean) => {
+    if (persistSkip && versionRef.current) {
+      const normalized = normalizeVersion(versionRef.current)
+      skippedVersion.current = normalized
+      skipReady.current = true
+      void window.sshApi.saveSettings({ skippedUpdateVersion: normalized })
+      clearLegacySkippedVersion()
+    }
+    setLeaving(true)
+    if (leaveTimer.current != null) window.clearTimeout(leaveTimer.current)
+    leaveTimer.current = window.setTimeout(() => {
+      setPhase(null)
+      setLeaving(false)
+      setBusy(false)
+      leaveTimer.current = null
+    }, 220)
+  }
+
+  useEffect(() => {
     return window.sshApi.onUpdateStatus((next) => {
       setStatus(next)
 
@@ -113,11 +139,13 @@ export function UpdatePrompt() {
         if (skipReady.current && skippedVersion.current === version) {
           return
         }
+        setLeaving(false)
         setPhase('available')
         return
       }
 
       if (next.state === 'downloading') {
+        setLeaving(false)
         setPhase('downloading')
         return
       }
@@ -128,6 +156,7 @@ export function UpdatePrompt() {
         if (skipReady.current && skippedVersion.current === version) {
           return
         }
+        setLeaving(false)
         setPhase('ready')
         return
       }
@@ -139,6 +168,7 @@ export function UpdatePrompt() {
         next.state === 'error'
       ) {
         setPhase(null)
+        setLeaving(false)
         setBusy(false)
       }
     })
@@ -156,17 +186,6 @@ export function UpdatePrompt() {
   const percent =
     status.state === 'downloading' ? Math.round(status.percent) : 0
 
-  const onLater = () => {
-    if ((phase === 'available' || phase === 'ready') && version) {
-      const normalized = normalizeVersion(version)
-      skippedVersion.current = normalized
-      skipReady.current = true
-      void window.sshApi.saveSettings({ skippedUpdateVersion: normalized })
-      clearLegacySkippedVersion()
-    }
-    setPhase(null)
-  }
-
   const manual =
     status.state === 'available' ? Boolean(status.manual) : false
 
@@ -175,7 +194,7 @@ export function UpdatePrompt() {
     try {
       if (manual) {
         await window.sshApi.openReleasesPage()
-        setPhase(null)
+        dismissToast(false)
         return
       }
       setPhase('downloading')
@@ -183,10 +202,6 @@ export function UpdatePrompt() {
     } finally {
       setBusy(false)
     }
-  }
-
-  const onInstall = () => {
-    void window.sshApi.installUpdate()
   }
 
   const title =
@@ -200,44 +215,35 @@ export function UpdatePrompt() {
     phase === 'ready'
       ? formatMessage(t('updatePromptReadyMessage'), { version })
       : phase === 'downloading'
-        ? t('updatePromptDownloadingTitle')
+        ? formatMessage(t('updateDownloading'), { percent })
         : manual
           ? t('updatePromptMessageMac')
           : formatMessage(t('updatePromptMessage'), { version })
 
   return (
-    <div className="update-modal-backdrop" role="presentation">
-      <div
-        className="update-modal"
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="update-prompt-title"
-        aria-describedby="update-prompt-desc"
-      >
-        <div className="update-modal__icon" aria-hidden>
-          <UpdateIcon />
-        </div>
-        <div className="update-modal__body">
-          <h2 id="update-prompt-title" className="update-modal__title">
-            {title}
-          </h2>
-          {phase !== 'downloading' ? (
-            <p id="update-prompt-desc" className="update-modal__message">
-              {message}
-            </p>
-          ) : null}
-          {phase === 'downloading' ? (
-            <ProgressBar
-              className="update-modal__progress"
-              value={percent}
-              label={`${percent}%`}
-            />
-          ) : null}
-          {version && phase !== 'downloading' ? (
-            <p className="update-modal__version">v{version}</p>
-          ) : null}
-        </div>
-        <div className="update-modal__actions">
+    <div
+      className={`update-toast${leaving ? ' is-leaving' : ''}`}
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+    >
+      <div className="update-toast__icon" aria-hidden>
+        <UpdateIcon />
+      </div>
+      <div className="update-toast__body">
+        <div className="update-toast__title">{title}</div>
+        <p className="update-toast__message">{message}</p>
+        {phase === 'downloading' ? (
+          <ProgressBar
+            className="update-toast__progress"
+            value={percent}
+            label={`${percent}%`}
+          />
+        ) : null}
+        {version && phase !== 'downloading' ? (
+          <div className="update-toast__version">v{version}</div>
+        ) : null}
+        <div className="update-toast__actions">
           {phase === 'available' ? (
             <>
               <button
@@ -252,7 +258,7 @@ export function UpdatePrompt() {
                 type="button"
                 className="btn btn-secondary"
                 disabled={busy}
-                onClick={onLater}
+                onClick={() => dismissToast(true)}
               >
                 {t('updateLater')}
               </button>
@@ -262,7 +268,7 @@ export function UpdatePrompt() {
             <button
               type="button"
               className="btn btn-secondary"
-              onClick={() => setPhase(null)}
+              onClick={() => dismissToast(false)}
             >
               {t('updateDownloadBackground')}
             </button>
@@ -272,14 +278,14 @@ export function UpdatePrompt() {
               <button
                 type="button"
                 className="btn btn-primary"
-                onClick={onInstall}
+                onClick={() => void window.sshApi.installUpdate()}
               >
                 {t('updateInstall')}
               </button>
               <button
                 type="button"
                 className="btn btn-secondary"
-                onClick={onLater}
+                onClick={() => dismissToast(true)}
               >
                 {t('updateLater')}
               </button>
@@ -287,6 +293,17 @@ export function UpdatePrompt() {
           ) : null}
         </div>
       </div>
+      <button
+        type="button"
+        className="update-toast__close"
+        aria-label={t('close')}
+        title={t('close')}
+        onClick={() =>
+          dismissToast(phase === 'available' || phase === 'ready')
+        }
+      >
+        ×
+      </button>
     </div>
   )
 }

@@ -40,12 +40,8 @@ import {
 import {
   destroyTray,
   hideMainToTray,
-  hideTrayPopup,
+  refreshTrayChrome,
   setTrayPopupState,
-  showMainWindow,
-  destroyTrayPopup,
-  getTrayPopupState,
-  positionTrayPopup,
   type TrayPopupState,
 } from '../tray/tray-manager'
 import {
@@ -126,7 +122,9 @@ export function registerIpcHandlers() {
   ipcMain.handle('settings:load', () => loadSettings())
 
   ipcMain.handle('settings:save', (_event, patch: Partial<AppSettings>) => {
-    return saveSettings(patch)
+    const next = saveSettings(patch)
+    refreshTrayChrome()
+    return next
   })
 
   ipcMain.handle('workspace:load', () => loadWorkspace())
@@ -920,42 +918,6 @@ export function registerIpcHandlers() {
       sessions: Array.isArray(state?.sessions) ? state.sessions : [],
       connections: Array.isArray(state?.connections) ? state.connections : [],
     })
-  })
-
-  ipcMain.handle('tray:getState', () => getTrayPopupState())
-
-  ipcMain.handle('tray:setPopupHeight', (event, height: number) => {
-    const win = BrowserWindow.fromWebContents(event.sender)
-    if (!win || win.isDestroyed()) return
-    const nextHeight = Math.max(248, Math.min(560, Math.round(height)))
-    positionTrayPopup(win, nextHeight)
-  })
-
-  ipcMain.handle('tray:openApp', () => {
-    destroyTrayPopup()
-    showMainWindow()
-  })
-
-  ipcMain.handle('tray:hidePopup', () => {
-    hideTrayPopup()
-  })
-
-  ipcMain.handle('tray:quickConnect', (_event, connectionId: string) => {
-    destroyTrayPopup()
-    showMainWindow()
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('tray:quick-connect', connectionId)
-    }
-  })
-
-  ipcMain.handle('tray:disconnect', (_event, sessionId: string) => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('tray:disconnect', sessionId)
-    }
-  })
-
-  ipcMain.handle('tray:quit', () => {
-    forceQuitAllWindows()
   })
 
   ipcMain.handle(

@@ -4,6 +4,9 @@ import { loadSettings } from './settings-store'
 
 const RELEASES_URL = 'https://github.com/GoblinThug/Custom-SSH/releases/latest'
 
+/** 'user' = Settings / tray "Check for updates"; 'auto' = quiet launch probe. */
+let checkSource: 'user' | 'auto' = 'auto'
+
 export type UpdateErrorCode =
   | 'macUnsigned'
   | 'network'
@@ -105,37 +108,48 @@ function isSkippedUpdate(version: string): boolean {
   return normalizeVersion(skipped) === normalizeVersion(version)
 }
 
-export function initAutoUpdater() {
-  /** 'user' = Settings "Check for updates"; 'auto' = quiet launch probe. */
-  let checkSource: 'user' | 'auto' = 'auto'
+/** Fake target used only in unpackaged `npm run dev` to exercise the update toast. */
+const DEV_FAKE_VERSION = '99.0.0-dev'
 
+function scheduleDevFakeAvailable(delayMs: number) {
+  emit({ state: 'checking' })
+  setTimeout(() => {
+    if (checkSource === 'auto' && isSkippedUpdate(DEV_FAKE_VERSION)) {
+      emit({ state: 'idle' })
+      return
+    }
+    emit({
+      state: 'available',
+      version: DEV_FAKE_VERSION,
+      releaseNotes: 'Dev-only preview of the update notification.',
+    })
+  }, delayMs)
+}
+
+async function simulateDevDownload() {
+  const total = 8_000_000
+  for (const percent of [12, 34, 58, 81, 100]) {
+    emit({
+      state: 'downloading',
+      percent,
+      transferred: Math.round((total * percent) / 100),
+      total,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 280))
+  }
+  emit({ state: 'ready', version: DEV_FAKE_VERSION })
+}
+
+export function initAutoUpdater() {
   ipcMain.handle('update:getVersion', () => app.getVersion())
 
-  ipcMain.handle('update:check', async () => {
-    if (!app.isPackaged) {
-      const status: UpdateStatus = { state: 'unsupported', reason: 'dev' }
-      emit(status)
-      return status
-    }
-    if (isPortableBuild()) {
-      const status: UpdateStatus = { state: 'unsupported', reason: 'portable' }
-      emit(status)
-      return status
-    }
-
-    checkSource = 'user'
-    emit({ state: 'checking' })
-    try {
-      // Status transitions are pushed via autoUpdater events.
-      await autoUpdater.checkForUpdates()
-      return null
-    } catch (error) {
-      const code = emitUpdateError(error, { quiet: false })
-      return { state: 'error', code } satisfies UpdateStatus
-    }
-  })
+  ipcMain.handle('update:check', () => checkForUpdatesUser())
 
   ipcMain.handle('update:download', async () => {
+    if (!app.isPackaged) {
+      void simulateDevDownload()
+      return true
+    }
     // Unsigned Mac builds cannot install via ShipIt (code signature check).
     if (isMacUnsignedUpdates()) {
       await shell.openExternal(RELEASES_URL)
@@ -151,6 +165,11 @@ export function initAutoUpdater() {
   })
 
   ipcMain.handle('update:install', () => {
+    if (!app.isPackaged) {
+      // Nothing to install in dev — clear the toast.
+      emit({ state: 'idle' })
+      return
+    }
     if (isMacUnsignedUpdates()) {
       void shell.openExternal(RELEASES_URL)
       return
@@ -160,7 +179,17 @@ export function initAutoUpdater() {
 
   ipcMain.handle('update:openReleases', () => shell.openExternal(RELEASES_URL))
 
-  if (!app.isPackaged || isPortableBuild()) {
+  // Dev: no real updater — still show the toast so UI can be tested.
+  if (!app.isPackaged) {
+    setTimeout(() => {
+      checkSource = 'auto'
+      if (isSkippedUpdate(DEV_FAKE_VERSION)) return
+      scheduleDevFakeAvailable(600)
+    }, 2500)
+    return
+  }
+
+  if (isPortableBuild()) {
     return
   }
 
@@ -230,4 +259,28 @@ export function initAutoUpdater() {
       checkSource = 'auto'
     })
   }, 4000)
+}
+
+/** User-initiated update check (Settings button or tray menu). */
+export async function checkForUpdatesUser(): Promise<UpdateStatus | null> {
+  if (!app.isPackaged) {
+    checkSource = 'user'
+    scheduleDevFakeAvailable(400)
+    return null
+  }
+  if (isPortableBuild()) {
+    const status: UpdateStatus = { state: 'unsupported', reason: 'portable' }
+    emit(status)
+    return status
+  }
+
+  checkSource = 'user'
+  emit({ state: 'checking' })
+  try {
+    await autoUpdater.checkForUpdates()
+    return null
+  } catch (error) {
+    const code = emitUpdateError(error, { quiet: false })
+    return { state: 'error', code } satisfies UpdateStatus
+  }
 }

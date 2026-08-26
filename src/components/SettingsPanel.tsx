@@ -4,6 +4,7 @@ import { useSettings } from '../i18n/SettingsContext'
 import type { AppLocale, AppTheme, CloseAction, Workspace } from '../types'
 import { formatAppError } from '../utils/formatAppError'
 import { formatMessage } from '../utils/formatMessage'
+import { ProgressBar } from './ProgressBar'
 import { SelectDropdown } from './SelectDropdown'
 
 const GITHUB_URL = 'https://github.com/GoblinThug/Custom-SSH'
@@ -125,9 +126,40 @@ export function SettingsPanel({ open, onClose, onWorkspaceChange }: Props) {
           : t('updateDevOnly')
       case 'idle':
       default:
-        return ''
+        return t('updateStatusIdle')
     }
   })()
+
+  const statusTone =
+    updateStatus.state === 'available' || updateStatus.state === 'ready'
+      ? 'ok'
+      : updateStatus.state === 'downloading' || updateStatus.state === 'checking'
+        ? 'busy'
+        : updateStatus.state === 'error' || updateStatus.state === 'unsupported'
+          ? 'warn'
+          : 'idle'
+
+  const statusBadge =
+    updateStatus.state === 'available'
+      ? t('updateStatusAvailable')
+      : updateStatus.state === 'downloading'
+        ? t('updateStatusDownloading')
+        : updateStatus.state === 'ready'
+          ? t('updateStatusReady')
+          : updateStatus.state === 'checking'
+            ? t('updateChecking')
+            : updateStatus.state === 'error'
+              ? t('updateStatusError')
+              : updateStatus.state === 'unsupported'
+                ? updateStatus.reason === 'portable'
+                  ? t('updatePortable')
+                  : t('updateDevOnly')
+                : t('updateStatusIdle')
+
+  const downloadPercent =
+    updateStatus.state === 'downloading'
+      ? Math.round(updateStatus.percent)
+      : 0
 
   const checkUpdates = async () => {
     setBusy(true)
@@ -399,7 +431,40 @@ export function SettingsPanel({ open, onClose, onWorkspaceChange }: Props) {
             <section className="settings-section">
               <div className="settings-section__label">{t('settingsUpdates')}</div>
               <div className="settings-update">
-                <div className="settings-update__status">{statusText}</div>
+                <div className="settings-update__head">
+                  <div className="settings-update__version">
+                    <span className="settings-update__version-label">
+                      {t('updateCurrentVersion')}
+                    </span>
+                    <span className="settings-update__version-num">
+                      {version ? `v${version}` : '…'}
+                    </span>
+                  </div>
+                  <div
+                    className={`settings-update__badge is-${statusTone}`}
+                    title={statusText}
+                  >
+                    <span className="settings-update__badge-dot" />
+                    <span className="settings-update__badge-text">{statusBadge}</span>
+                  </div>
+                </div>
+
+                <p className="settings-update__hint">{t('updateHint')}</p>
+
+                {statusText &&
+                updateStatus.state !== 'idle' &&
+                updateStatus.state !== 'not-available' ? (
+                  <div className="settings-update__status">{statusText}</div>
+                ) : null}
+
+                {updateStatus.state === 'downloading' ? (
+                  <ProgressBar
+                    className="settings-update__progress"
+                    value={downloadPercent}
+                    label={`${downloadPercent}%`}
+                  />
+                ) : null}
+
                 <div className="settings-update__actions">
                   {updateStatus.state === 'available' ? (
                     <button
@@ -424,7 +489,8 @@ export function SettingsPanel({ open, onClose, onWorkspaceChange }: Props) {
                   ) : null}
                   {updateStatus.state !== 'available' &&
                   updateStatus.state !== 'ready' &&
-                  updateStatus.state !== 'downloading' ? (
+                  updateStatus.state !== 'downloading' &&
+                  updateStatus.state !== 'unsupported' ? (
                     <button
                       type="button"
                       className="btn btn-secondary"
@@ -432,6 +498,16 @@ export function SettingsPanel({ open, onClose, onWorkspaceChange }: Props) {
                       onClick={() => void checkUpdates()}
                     >
                       {t('updateCheck')}
+                    </button>
+                  ) : null}
+                  {updateStatus.state === 'unsupported' &&
+                  updateStatus.reason === 'portable' ? (
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => void window.sshApi.openReleasesPage()}
+                    >
+                      {t('updateOpenReleases')}
                     </button>
                   ) : null}
                 </div>

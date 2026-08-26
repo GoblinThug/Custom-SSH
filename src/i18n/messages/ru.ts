@@ -263,6 +263,14 @@ export const ru: Record<MessageKey, string> = {
   updateErrorGeneric: 'Не удалось обновить. Скачайте последнюю версию с Releases.',
   updateDevOnly: 'Автообновление работает в установленной сборке',
   updatePortable: 'Portable-сборка не обновляется автоматически — используйте установщик',
+  updateHint:
+    'Проверка идёт автоматически при запуске. Если есть новая версия — появится уведомление в углу.',
+  updateCurrentVersion: 'Установлена',
+  updateStatusIdle: 'Актуальная версия',
+  updateStatusAvailable: 'Доступно обновление',
+  updateStatusDownloading: 'Загрузка',
+  updateStatusReady: 'Готово к установке',
+  updateStatusError: 'Ошибка обновления',
   updatePromptTitle: 'Доступно обновление',
   updatePromptMessage:
     'Доступна новая версия CustomSSH. Скачать обновление сейчас?',

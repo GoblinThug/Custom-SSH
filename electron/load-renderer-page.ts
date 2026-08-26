@@ -5,7 +5,6 @@ const PAGE_FILES = {
   editor: 'editor.html',
   viewer: 'viewer.html',
   archive: 'archive.html',
-  tray: 'tray.html',
 } as const
 
 export type SecondaryRendererPage = keyof typeof PAGE_FILES
