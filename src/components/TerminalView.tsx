@@ -29,6 +29,202 @@ function decodeBase64(data: string): Uint8Array {
   return bytes
 }
 
+/**
+ * Delete the current mouse/keyboard selection via the remote PTY.
+ * Only works for a single-line selection on the cursor row (typical command edit).
+ * Moves the remote cursor to the selection end, then sends Backspace N times.
+ *
+ * Note: despite typings saying 1-based, getSelectionPosition() returns 0-based
+ * buffer coords with an exclusive end (xterm SelectionService).
+ */
+function tryDeleteSelection(
+  term: Terminal,
+  write: (data: string) => void,
+): boolean {
+  if (!term.hasSelection()) return false
+  const range = term.getSelectionPosition()
+  if (!range) {
+    term.clearSelection()
+    return false
+  }
+
+  const buf = term.buffer.active
+  // Normalize in case the range is reported reversed
+  let startX = range.start.x
+  let startY = range.start.y
+  let endX = range.end.x
+  let endY = range.end.y
+  if (startY > endY || (startY === endY && startX > endX)) {
+    ;[startX, startY, endX, endY] = [endX, endY, startX, startY]
+  }
+  // Exclusive end at col 0 of the next row == end of the previous row
+  if (endY === startY + 1 && endX === 0) {
+    endY = startY
+    endX = term.cols
+  }
+
+  const selected = term.getSelection()
+  // Real multi-line selection (not the exclusive-end wrap above)
+  if (!selected || selected.includes('\n') || selected.includes('\r')) {
+    term.clearSelection()
+    return false
+  }
+
+  const cursorY = buf.baseY + buf.cursorY
+  const cursorX = buf.cursorX
+
+  // History / other-row selections cannot be deleted safely over a raw PTY
+  if (startY !== endY || startY !== cursorY || endX <= startX) {
+    term.clearSelection()
+    return false
+  }
+
+  const charCount = [...selected].length
+  if (charCount <= 0) {
+    term.clearSelection()
+    return false
+  }
+
+  term.clearSelection()
+
+  // endX is exclusive — place remote cursor there, then backspace
+  let seq = ''
+  if (cursorX > endX) {
+    seq += '\x1b[D'.repeat(cursorX - endX)
+  } else if (cursorX < endX) {
+    seq += '\x1b[C'.repeat(endX - cursorX)
+  }
+  seq += '\x7f'.repeat(charCount)
+  write(seq)
+  return true
+}
+
+function isWordChar(ch: string): boolean {
+  if (!ch) return false
+  return /[\p{L}\p{N}_]/u.test(ch)
+}
+
+function caretIndexFromCursor(term: Terminal): number {
+  const buf = term.buffer.active
+  return (buf.baseY + buf.cursorY) * term.cols + buf.cursorX
+}
+
+function maxCaretIndex(term: Terminal): number {
+  return Math.max(0, term.buffer.active.length) * term.cols
+}
+
+function charAtCaret(term: Terminal, index: number): string {
+  if (index < 0) return ''
+  const cols = term.cols
+  const x = index % cols
+  const y = Math.floor(index / cols)
+  const line = term.buffer.active.getLine(y)
+  if (!line) return ''
+  const cell = line.getCell(x)
+  if (!cell || cell.getWidth() === 0) return ''
+  return cell.getChars()
+}
+
+function moveCaretCell(term: Terminal, index: number, dir: -1 | 1): number {
+  const max = maxCaretIndex(term)
+  let i = index + dir
+  while (i > 0 && i < max) {
+    const cols = term.cols
+    const x = i % cols
+    const y = Math.floor(i / cols)
+    const line = term.buffer.active.getLine(y)
+    const width = line?.getCell(x)?.getWidth() ?? 1
+    // Skip wide-char trailers so selection moves by visible characters
+    if (width === 0) {
+      i += dir
+      continue
+    }
+    break
+  }
+  return Math.max(0, Math.min(max, i))
+}
+
+function moveCaretWord(term: Terminal, index: number, dir: -1 | 1): number {
+  const max = maxCaretIndex(term)
+  if (dir < 0) {
+    let i = index
+    if (i <= 0) return 0
+    i -= 1
+    while (i > 0 && !isWordChar(charAtCaret(term, i))) i -= 1
+    while (i > 0 && isWordChar(charAtCaret(term, i - 1))) i -= 1
+    return i
+  }
+  let i = index
+  if (i >= max) return max
+  if (isWordChar(charAtCaret(term, i))) {
+    while (i < max && isWordChar(charAtCaret(term, i))) i += 1
+  } else {
+    while (i < max && !isWordChar(charAtCaret(term, i))) i += 1
+    while (i < max && isWordChar(charAtCaret(term, i))) i += 1
+  }
+  return i
+}
+
+function applyBufferSelection(term: Terminal, anchor: number, focus: number) {
+  const lo = Math.min(anchor, focus)
+  const hi = Math.max(anchor, focus)
+  if (lo === hi) {
+    term.clearSelection()
+    return
+  }
+  const cols = term.cols
+  term.select(lo % cols, Math.floor(lo / cols), hi - lo)
+}
+
+type KbSelection = { anchor: number; focus: number }
+
+function rangeToKbSelection(term: Terminal): KbSelection | null {
+  const range = term.getSelectionPosition()
+  if (!range) return null
+  let startX = range.start.x
+  let startY = range.start.y
+  let endX = range.end.x
+  let endY = range.end.y
+  if (startY > endY || (startY === endY && startX > endX)) {
+    ;[startX, startY, endX, endY] = [endX, endY, startX, startY]
+  }
+  if (endY === startY + 1 && endX === 0) {
+    endY = startY
+    endX = term.cols
+  }
+  const cols = term.cols
+  return {
+    anchor: startY * cols + startX,
+    focus: endY * cols + endX,
+  }
+}
+
+/** Shift(+Ctrl)+Left/Right local buffer selection (does not send keys to PTY). */
+function extendKeyboardSelection(
+  term: Terminal,
+  kbSel: KbSelection,
+  direction: 'left' | 'right',
+  byWord: boolean,
+): void {
+  if (kbSel.anchor < 0 || kbSel.focus < 0 || !term.hasSelection()) {
+    const existing = term.hasSelection() ? rangeToKbSelection(term) : null
+    if (existing) {
+      kbSel.anchor = existing.anchor
+      kbSel.focus = existing.focus
+    } else {
+      const caret = caretIndexFromCursor(term)
+      kbSel.anchor = caret
+      kbSel.focus = caret
+    }
+  }
+
+  const dir = direction === 'left' ? -1 : 1
+  kbSel.focus = byWord
+    ? moveCaretWord(term, kbSel.focus, dir)
+    : moveCaretCell(term, kbSel.focus, dir)
+  applyBufferSelection(term, kbSel.anchor, kbSel.focus)
+}
+
 function terminalTheme(theme: AppTheme) {
   if (theme === 'light') {
     // High-contrast palette for light backgrounds (dark ANSI colors).
@@ -328,10 +524,23 @@ export function TerminalView({
       term.selectLines(row, row)
     }
 
+    // Local Shift / Ctrl+Shift arrow selection (not sent to PTY)
+    const kbSel: KbSelection = { anchor: -1, focus: -1 }
+
+    const handleShiftArrowSelection = (
+      direction: 'left' | 'right',
+      byWord: boolean,
+    ) => {
+      extendKeyboardSelection(term, kbSel, direction, byWord)
+    }
+
     // Copy-on-select (PuTTY / classic SSH client behavior)
     const onSelectionChange = term.onSelectionChange(() => {
       if (term.hasSelection()) {
         copySelection()
+      } else {
+        kbSel.anchor = -1
+        kbSel.focus = -1
       }
     })
 
@@ -387,17 +596,62 @@ export function TerminalView({
         ev.inputType === 'historyRedo'
       ) {
         ev.preventDefault()
+        return
+      }
+      // Browser may treat Backspace/Delete as editing xterm's hidden textarea
+      // when a DOM selection exists — block that so we can delete via PTY.
+      if (
+        (ev.inputType === 'deleteContentBackward' ||
+          ev.inputType === 'deleteContentForward' ||
+          ev.inputType === 'deleteByCut') &&
+        term.hasSelection()
+      ) {
+        ev.preventDefault()
       }
     }
 
-    // Capture-phase: deliver suspend before Chromium undo steals it.
+    // Capture-phase: deliver suspend / selection-delete before Chromium steals them.
     const onTextareaKeyDownCapture = (ev: KeyboardEvent) => {
       syncMod(ev.code, true)
+      const keyEv = effectiveEvent(ev)
       const hk = hotkeysRef.current
-      if (!matchBinding(effectiveEvent(ev), hk.suspend)) return
-      ev.preventDefault()
-      ev.stopImmediatePropagation()
-      writeToSession('\x1a')
+      if (matchBinding(keyEv, hk.suspend)) {
+        ev.preventDefault()
+        ev.stopImmediatePropagation()
+        writeToSession('\x1a')
+        return
+      }
+
+      if (
+        !keyEv.ctrlKey &&
+        !keyEv.metaKey &&
+        !keyEv.altKey &&
+        (ev.code === 'Backspace' ||
+          ev.code === 'Delete' ||
+          ev.key === 'Backspace' ||
+          ev.key === 'Delete') &&
+        term.hasSelection()
+      ) {
+        ev.preventDefault()
+        ev.stopImmediatePropagation()
+        tryDeleteSelection(term, writeToSession)
+        return
+      }
+
+      // Shift+Left/Right: character selection; Ctrl+Shift+Left/Right: word selection
+      if (
+        keyEv.shiftKey &&
+        !keyEv.altKey &&
+        !keyEv.metaKey &&
+        (ev.code === 'ArrowLeft' || ev.code === 'ArrowRight')
+      ) {
+        ev.preventDefault()
+        ev.stopImmediatePropagation()
+        handleShiftArrowSelection(
+          ev.code === 'ArrowLeft' ? 'left' : 'right',
+          keyEv.ctrlKey,
+        )
+      }
     }
 
     textarea?.addEventListener('beforeinput', onBeforeInput)
@@ -476,6 +730,51 @@ export function TerminalView({
       }
       if (keyEv.shiftKey && !keyEv.ctrlKey && !keyEv.altKey && ev.code === 'Insert') {
         pasteClipboard()
+        return consume()
+      }
+
+      // Shift(+Ctrl)+arrows: local selection — do not forward to PTY
+      if (
+        keyEv.shiftKey &&
+        !keyEv.altKey &&
+        !keyEv.metaKey &&
+        (ev.code === 'ArrowLeft' || ev.code === 'ArrowRight')
+      ) {
+        handleShiftArrowSelection(
+          ev.code === 'ArrowLeft' ? 'left' : 'right',
+          keyEv.ctrlKey,
+        )
+        return consume()
+      }
+
+      // Plain arrows dismiss local selection so highlight doesn't stick
+      if (
+        !keyEv.shiftKey &&
+        (ev.code === 'ArrowLeft' ||
+          ev.code === 'ArrowRight' ||
+          ev.code === 'ArrowUp' ||
+          ev.code === 'ArrowDown' ||
+          ev.code === 'Home' ||
+          ev.code === 'End')
+      ) {
+        kbSel.anchor = -1
+        kbSel.focus = -1
+        if (term.hasSelection()) term.clearSelection()
+      }
+
+      // Delete selected text (same line as cursor) with Backspace / Delete
+      if (
+        !keyEv.ctrlKey &&
+        !keyEv.metaKey &&
+        !keyEv.altKey &&
+        (ev.code === 'Backspace' || ev.code === 'Delete') &&
+        term.hasSelection()
+      ) {
+        if (tryDeleteSelection(term, writeToSession)) {
+          return consume()
+        }
+        // Selection was cleared (e.g. multi-line) — still swallow this key so
+        // the first press dismisses the highlight without also deleting a char.
         return consume()
       }
 
