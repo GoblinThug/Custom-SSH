@@ -159,6 +159,16 @@
   white-space: nowrap;
 }
 
+.sql-browse-grid tr.sql-browse-filter-row th {
+  top: 31px;
+  z-index: 1;
+  padding: 4px 6px;
+  font-weight: 400;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
 .sql-browse-grid th.row-check,
 .sql-browse-grid td.row-check {
   width: 36px;
@@ -176,8 +186,55 @@
   padding: 6px 8px;
 }
 
+.sql-browse-grid tr.sql-browse-filter-row th.row-check--filter {
+  top: 31px;
+  z-index: 3;
+  background: var(--bg-elevated);
+  padding: 4px 6px;
+}
+
 .sql-browse-grid td.row-check {
   padding: 6px 8px;
+}
+
+.sql-browse-filter-input {
+  display: block;
+  width: 100%;
+  min-width: 72px;
+  max-width: 280px;
+  box-sizing: border-box;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 7px;
+  background: var(--bg-panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.sql-browse-filter-input::placeholder {
+  color: var(--text-muted, var(--text-secondary));
+}
+
+.sql-browse-filter-input:hover {
+  border-color: var(--border-strong);
+}
+
+.sql-browse-filter-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--bg-input-focus, var(--bg-panel));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.sql-browse-empty-cell {
+  padding: 20px 12px !important;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 13px;
+  border-right: 0 !important;
 }
 
 .sql-browse-grid tr.is-selected td {

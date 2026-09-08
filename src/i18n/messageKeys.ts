@@ -141,6 +141,8 @@ export type MessageKey =
   | 'sqlBrowseKeepEditing'
   | 'sqlBrowseNull'
   | 'sqlBrowseMutateFailed'
+  | 'sqlBrowseFilter'
+  | 'sqlBrowseNoFilterMatches'
   | 'editorFind'
   | 'editorFindPlaceholder'
   | 'editorReplace'

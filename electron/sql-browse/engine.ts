@@ -151,25 +151,41 @@ export class SqlBrowseEngine {
     table: string,
     limit: number,
     offset: number,
+    filters: Record<string, string> = {},
   ): SqlQueryResult {
     this.assertIdent(table)
     const safeLimit = Math.min(Math.max(1, Math.floor(limit) || 100), 500)
     const safeOffset = Math.max(0, Math.floor(offset) || 0)
     const readonly = this.isView(table)
 
+    const whereParts: string[] = []
+    const whereBinds: string[] = []
+    for (const [column, raw] of Object.entries(filters)) {
+      const value = raw.trim()
+      if (!value) continue
+      this.assertIdent(column)
+      whereParts.push(
+        `CAST(${quoteIdent(column)} AS TEXT) LIKE ? ESCAPE '\\'`,
+      )
+      whereBinds.push(`%${escapeLike(value)}%`)
+    }
+    const whereSql =
+      whereParts.length > 0 ? ` WHERE ${whereParts.join(' AND ')}` : ''
+
     const countStmt = this.db.prepare(
-      `SELECT COUNT(*) AS c FROM ${quoteIdent(table)}`,
+      `SELECT COUNT(*) AS c FROM ${quoteIdent(table)}${whereSql}`,
     )
+    if (whereBinds.length) countStmt.bind(whereBinds)
     countStmt.step()
     const total = Number(countStmt.get()[0] ?? 0)
     countStmt.free()
 
     const select = readonly
-      ? `SELECT * FROM ${quoteIdent(table)} LIMIT ? OFFSET ?`
-      : `SELECT rowid AS __rowid__, * FROM ${quoteIdent(table)} LIMIT ? OFFSET ?`
+      ? `SELECT * FROM ${quoteIdent(table)}${whereSql} LIMIT ? OFFSET ?`
+      : `SELECT rowid AS __rowid__, * FROM ${quoteIdent(table)}${whereSql} LIMIT ? OFFSET ?`
 
     const stmt = this.db.prepare(select)
-    stmt.bind([safeLimit, safeOffset])
+    stmt.bind([...whereBinds, safeLimit, safeOffset])
     const rows: Array<Record<string, unknown>> = []
     let columns: string[] = []
     while (stmt.step()) {
@@ -317,6 +333,10 @@ function toBindValue(value: unknown): string | number | null | Uint8Array {
   if (typeof value === 'boolean') return value ? 1 : 0
   if (value instanceof Uint8Array) return value
   return String(value)
+}
+
+function escapeLike(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')
 }
 
 function normalizeRow(obj: Record<string, unknown>): Record<string, unknown> {

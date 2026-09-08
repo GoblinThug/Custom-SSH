@@ -863,9 +863,10 @@ export function registerIpcHandlers() {
       table: string,
       limit: number,
       offset: number,
+      filters?: Record<string, string>,
     ) => {
       const session = await ensureSqlBrowseOpen(sessionId, remotePath)
-      return session.engine.queryRows(table, limit, offset)
+      return session.engine.queryRows(table, limit, offset, filters ?? {})
     },
   )
 

@@ -144,6 +144,8 @@ export const ru: Record<MessageKey, string> = {
   sqlBrowseKeepEditing: 'Продолжить',
   sqlBrowseNull: 'NULL',
   sqlBrowseMutateFailed: 'Не удалось изменить данные',
+  sqlBrowseFilter: 'Фильтр',
+  sqlBrowseNoFilterMatches: 'Нет строк по фильтрам',
   editorFind: 'Найти',
   editorFindPlaceholder: 'Что искать…',
   editorReplace: 'Заменить на',

@@ -319,6 +319,7 @@ const api = {
     table: string,
     limit: number,
     offset: number,
+    filters?: Record<string, string>,
   ): Promise<{
     columns: string[]
     rows: Array<Record<string, unknown>>
@@ -334,6 +335,7 @@ const api = {
       table,
       limit,
       offset,
+      filters ?? {},
     ),
   sqlBrowseUpdate: (
     sessionId: string,

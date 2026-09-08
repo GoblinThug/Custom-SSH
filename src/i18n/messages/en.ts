@@ -143,6 +143,8 @@ export const en: Record<MessageKey, string> = {
   sqlBrowseKeepEditing: 'Keep editing',
   sqlBrowseNull: 'NULL',
   sqlBrowseMutateFailed: 'Failed to modify data',
+  sqlBrowseFilter: 'Filter',
+  sqlBrowseNoFilterMatches: 'No rows match the filters',
   editorFind: 'Find',
   editorFindPlaceholder: 'Text to find…',
   editorReplace: 'Replace with',

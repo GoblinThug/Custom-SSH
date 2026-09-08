@@ -68,9 +68,15 @@ export function SqlBrowseApp() {
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [edit, setEdit] = useState<EditCell | null>(null)
   const [closePromptOpen, setClosePromptOpen] = useState(false)
+  const [columnFilters, setColumnFilters] = useState<Record<string, string>>(
+    {},
+  )
   const dirtyRef = useRef(false)
   const editInputRef = useRef<HTMLInputElement | null>(null)
   const selectAllRef = useRef<HTMLInputElement | null>(null)
+  const filtersRef = useRef(columnFilters)
+  const suppressFilterReloadRef = useRef(false)
+  filtersRef.current = columnFilters
 
   useEffect(() => {
     dirtyRef.current = dirty
@@ -101,7 +107,11 @@ export function SqlBrowseApp() {
   }, [fileName, remotePath, sessionId, t])
 
   const loadRows = useCallback(
-    async (table: string, offset: number) => {
+    async (
+      table: string,
+      offset: number,
+      filters: Record<string, string> = filtersRef.current,
+    ) => {
       if (!sessionId || !remotePath) return
       setBusy(true)
       setError(undefined)
@@ -114,6 +124,7 @@ export function SqlBrowseApp() {
           table,
           PAGE_SIZE,
           offset,
+          filters,
         )
         setQuery(result)
       } catch (err) {
@@ -132,10 +143,37 @@ export function SqlBrowseApp() {
   useEffect(() => {
     if (!activeTable) {
       setQuery(null)
+      setColumnFilters({})
       return
     }
-    void loadRows(activeTable, 0)
+    suppressFilterReloadRef.current = true
+    setColumnFilters({})
+    void loadRows(activeTable, 0, {})
   }, [activeTable, loadRows])
+
+  useEffect(() => {
+    if (!activeTable) return
+    if (suppressFilterReloadRef.current) {
+      suppressFilterReloadRef.current = false
+      return
+    }
+    const timer = window.setTimeout(() => {
+      void loadRows(activeTable, 0, columnFilters)
+    }, 250)
+    return () => window.clearTimeout(timer)
+  }, [columnFilters, activeTable, loadRows])
+
+  const hasActiveFilters = useMemo(
+    () => Object.values(columnFilters).some((value) => value.trim()),
+    [columnFilters],
+  )
+
+  const setColumnFilter = (column: string, value: string) => {
+    setColumnFilters((prev) => {
+      if ((prev[column] ?? '') === value) return prev
+      return { ...prev, [column]: value }
+    })
+  }
 
   const forceClose = useCallback(async () => {
     setClosePromptOpen(false)
@@ -454,7 +492,7 @@ export function SqlBrowseApp() {
                 </div>
               ) : !activeTable ? (
                 <div className="sql-browse-empty">{t('sqlBrowseNoTables')}</div>
-              ) : !query || query.rows.length === 0 ? (
+              ) : !query ? (
                 <div className="sql-browse-empty">{t('sqlBrowseEmpty')}</div>
               ) : (
                 <table className="sql-browse-grid">
@@ -488,9 +526,48 @@ export function SqlBrowseApp() {
                         <th key={col}>{col}</th>
                       ))}
                     </tr>
+                    <tr className="sql-browse-filter-row">
+                      {!readonly ? (
+                        <th className="row-check row-check--filter" />
+                      ) : null}
+                      {visibleColumns.map((col) => (
+                        <th key={`filter-${col}`} className="sql-browse-filter-cell">
+                          <input
+                            type="text"
+                            className="sql-browse-filter-input"
+                            value={columnFilters[col] ?? ''}
+                            placeholder={t('sqlBrowseFilter')}
+                            spellCheck={false}
+                            onChange={(event) =>
+                              setColumnFilter(col, event.target.value)
+                            }
+                            onKeyDown={(event) => {
+                              if (event.key === 'Escape') {
+                                event.preventDefault()
+                                setColumnFilter(col, '')
+                              }
+                            }}
+                          />
+                        </th>
+                      ))}
+                    </tr>
                   </thead>
                   <tbody>
-                    {query.rows.map((row) => {
+                    {query.rows.length === 0 ? (
+                      <tr>
+                        <td
+                          className="sql-browse-empty-cell"
+                          colSpan={
+                            visibleColumns.length + (readonly ? 0 : 1)
+                          }
+                        >
+                          {hasActiveFilters
+                            ? t('sqlBrowseNoFilterMatches')
+                            : t('sqlBrowseEmpty')}
+                        </td>
+                      </tr>
+                    ) : (
+                      query.rows.map((row) => {
                       const rowid = Number(row.__rowid__)
                       const isSelected = selected.has(rowid)
                       return (
@@ -577,7 +654,8 @@ export function SqlBrowseApp() {
                           })}
                         </tr>
                       )
-                    })}
+                    })
+                    )}
                   </tbody>
                 </table>
               )}
