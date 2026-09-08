@@ -197,6 +197,22 @@ const MESSAGE_RULES: Array<{ re: RegExp; key: MessageKey }> = [
     re: /archive_open_failed/i,
     key: 'archiveOpenFailed',
   },
+  {
+    re: /sql_too_large/i,
+    key: 'sqlBrowseTooLarge',
+  },
+  {
+    re: /sql_db_corrupt/i,
+    key: 'sqlBrowseCorrupt',
+  },
+  {
+    re: /sql_dump_invalid/i,
+    key: 'sqlBrowseDumpInvalid',
+  },
+  {
+    re: /sql_view_readonly/i,
+    key: 'sqlBrowseViewReadonly',
+  },
 ]
 
 /**

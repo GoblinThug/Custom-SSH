@@ -11,6 +11,7 @@ import { useSettings } from '../i18n/SettingsContext'
 import type { RemoteFsEntry } from '../types'
 import { isImageFile } from '../imageFiles'
 import { isArchiveFile } from '../archiveFiles'
+import { isSqlDbFile, isSqlDumpFile } from '../sqlDbFiles'
 import { formatAppError } from '../utils/formatAppError'
 import { formatMessage } from '../utils/formatMessage'
 import { FileTreeNode } from './file-tree/FileTreeNode'
@@ -360,11 +361,14 @@ export function FileTreePanel({
       })
   }
 
-  const openEditor = async (remotePath: string) => {
+  const openEditor = async (
+    remotePath: string,
+    opts?: { asText?: boolean },
+  ) => {
     if (!sessionId) return
     setActionNote(undefined)
     try {
-      await window.sshApi.openEditorWindow(sessionId, remotePath)
+      await window.sshApi.openEditorWindow(sessionId, remotePath, opts)
     } catch (err) {
       setError(formatAppError(err, t, 'editorLoadFailed'))
     }
@@ -394,6 +398,20 @@ export function FileTreePanel({
     }
   }
 
+  const openSqlBrowse = async (remotePath: string) => {
+    if (!sessionId) return
+    setActionNote(undefined)
+    if (typeof window.sshApi.openSqlBrowseWindow !== 'function') {
+      setError(t('sqlBrowseLoadFailed'))
+      return
+    }
+    try {
+      await window.sshApi.openSqlBrowseWindow(sessionId, remotePath)
+    } catch (err) {
+      setError(formatAppError(err, t, 'sqlBrowseLoadFailed'))
+    }
+  }
+
   const openFile = (entry: RemoteFsEntry) => {
     if (isImageFile(entry.name) || isImageFile(entry.path)) {
       void openViewer(entry.path)
@@ -401,6 +419,10 @@ export function FileTreePanel({
     }
     if (isArchiveFile(entry.name) || isArchiveFile(entry.path)) {
       void openArchive(entry.path)
+      return
+    }
+    if (isSqlDbFile(entry.name) || isSqlDbFile(entry.path)) {
+      void openSqlBrowse(entry.path)
       return
     }
     void openEditor(entry.path)
@@ -927,7 +949,18 @@ export function FileTreePanel({
                   ? [{ id: 'viewImage', label: t('fileViewImage') }]
                   : isArchiveFile(entry.name) || isArchiveFile(entry.path)
                     ? [{ id: 'openArchive', label: t('fileOpenArchive') }]
-                    : [{ id: 'edit', label: t('fileEdit') }]),
+                    : isSqlDbFile(entry.name) || isSqlDbFile(entry.path)
+                      ? [
+                          {
+                            id: 'openSqlBrowse',
+                            label: t('fileOpenSqlBrowse'),
+                          },
+                          ...(isSqlDumpFile(entry.name) ||
+                          isSqlDumpFile(entry.path)
+                            ? [{ id: 'edit', label: t('fileEditAsText') }]
+                            : []),
+                        ]
+                      : [{ id: 'edit', label: t('fileEdit') }]),
                 { id: 'download', label: t('fileDownload') },
               ]),
           ...(entry.path === '/'
@@ -944,8 +977,15 @@ export function FileTreePanel({
       void openViewer(targets[0])
     } else if (action === 'openArchive' && targets[0] && !entry.isDir) {
       void openArchive(targets[0])
+    } else if (action === 'openSqlBrowse' && targets[0] && !entry.isDir) {
+      void openSqlBrowse(targets[0])
     } else if (action === 'edit' && targets[0] && !entry.isDir) {
-      void openEditor(targets[0])
+      void openEditor(
+        targets[0],
+        isSqlDumpFile(entry.name) || isSqlDumpFile(entry.path)
+          ? { asText: true }
+          : undefined,
+      )
     } else if (action === 'download') void downloadItems(targets)
     else if (action === 'upload') void uploadTo(uploadTarget)
     else if (action === 'mkdir') {

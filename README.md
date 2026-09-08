@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Десктопный SSH-клиент</strong> для Windows, macOS и Linux<br />
-  Подключения · терминал · файлы на сервере · редактор
+  Подключения · терминал · файлы на сервере · редактор · SQL Browse
 </p>
 
 <p align="center">
@@ -32,13 +32,15 @@
 
 ## ✨ Что это
 
-**CustomSSH** — локальный SSH-клиент для работы с удалёнными серверами: сохранённые хосты, полноценный терминал, дерево файлов по SFTP и редактор с подсветкой синтаксиса.
+**CustomSSH** — локальный SSH-клиент для работы с удалёнными серверами: сохранённые хосты, полноценный терминал, дерево файлов по SFTP, редактор с подсветкой синтаксиса и просмотр SQLite / SQL.
 
 | | Возможность |
 |---|---|
 | 🗂️ | Сохранённые подключения и цветные папки |
 | ⌨️ | Терминал с вкладками, поиском по выводу и настраиваемыми хоткеями |
 | 📁 | Дерево файлов: просмотр, upload/download, CRUD, фильтр, закрепление |
+| 🖼️ | Просмотр изображений и обзор архивов в отдельных окнах |
+| 🗄️ | SQL Browse: таблицы SQLite / `.db` / `.sql`, правка строк, сохранение на сервер |
 | 🚚 | Панель передач: прогресс, отмена файлов, возобновление после обрыва |
 | 📝 | Редактор в отдельном окне с сохранением на сервер |
 | 🔄 | Автопереподключение и индикатор пинга |
@@ -47,7 +49,7 @@
 | 🎨 | Тёмная / светлая тема, русский и английский |
 | ⬆️ | Обновления: авто на Windows (Setup) и Linux (AppImage); на macOS — ссылка на Releases |
 
-Текущая версия в репозитории: **`4.1.3`** (актуальный номер всегда в [Releases](https://github.com/GoblinThug/Custom-SSH/releases)).
+Текущая версия в репозитории: **`4.4.0`** (актуальный номер всегда в [Releases](https://github.com/GoblinThug/Custom-SSH/releases)).
 
 ---
 
@@ -167,10 +169,27 @@ sudo dpkg -i CustomSSH-*-x64.deb
 - Скачивание файлов и папок
 - Создать / переименовать / удалить (контекстное меню)
 - Выделение: **Ctrl/⌘+клик** и **Shift+клик**
-- Двойной клик по файлу — редактор
+- Двойной клик по файлу открывает подходящее окно:
+  - изображения → просмотрщик
+  - архивы (zip, tar, rar, …) → обзор содержимого и извлечение
+  - SQLite / `.db` / `.sql` → **SQL Browse**
+  - остальное → текстовый редактор
 - Фильтр по имени в шапке панели
 - **Закрепить** панель справа (булавка) — без затемнения, остаётся открытой
 - Путь в шапке: двойной клик — правка, **Enter** / кнопка **Перейти** — переход в дереве (**cwd терминала не меняется**)
+
+### 🗄️ SQL Browse
+
+Отдельное окно для файлов `.sqlite`, `.sqlite3`, `.db`, `.db3`, `.s3db`, `.sdb` и SQL-дампов `.sql`:
+
+- Список таблиц и представлений (views — только чтение)
+- Данные в виде таблицы с пагинацией
+- Редактирование ячеек, добавление и удаление строк
+- Сохранение изменений обратно на сервер (бинарный SQLite или SQL-дамп)
+- Предупреждение о несохранённых изменениях при закрытии
+- Для `.sql` в контекстном меню доступно **Открыть как текст**
+
+> Бинарные `.db` / `.sqlite` в текстовый редактор не открываются — это не текст, а база данных.
 
 ### 🚚 Передачи файлов
 
@@ -301,13 +320,15 @@ Workflow [`.github/workflows/release.yml`](.github/workflows/release.yml) соб
 
 ## ✨ What it is
 
-**CustomSSH** is a local desktop SSH client for remote servers: saved hosts, a full terminal, an SFTP file tree, and a syntax-highlighted editor. Available on **Windows**, **macOS**, and **Linux**.
+**CustomSSH** is a local desktop SSH client for remote servers: saved hosts, a full terminal, an SFTP file tree, a syntax-highlighted editor, and SQLite / SQL browsing. Available on **Windows**, **macOS**, and **Linux**.
 
 | | Feature |
 |---|---|
 | 🗂️ | Saved connections and colored folders |
 | ⌨️ | Multi-tab terminal, find-in-output, configurable hotkeys |
 | 📁 | Remote file tree: browse, upload/download, CRUD, filter, pin |
+| 🖼️ | Image viewer and archive browser in separate windows |
+| 🗄️ | SQL Browse: SQLite / `.db` / `.sql` tables, row edits, save to server |
 | 🚚 | Transfer dock: progress, per-file cancel, resume after reconnect |
 | 📝 | Editor in a separate window with save-to-server |
 | 🔄 | Auto-reconnect and latency indicator |
@@ -316,7 +337,7 @@ Workflow [`.github/workflows/release.yml`](.github/workflows/release.yml) соб
 | 🎨 | Dark / light theme, English & Russian |
 | ⬆️ | Updates: auto on Windows Setup and Linux AppImage; on macOS — open Releases |
 
-Repo version: **`4.1.3`** (always check [Releases](https://github.com/GoblinThug/Custom-SSH/releases) for the latest).
+Repo version: **`4.4.0`** (always check [Releases](https://github.com/GoblinThug/Custom-SSH/releases) for the latest).
 
 ---
 
@@ -435,10 +456,27 @@ Directory tree panel (folder icon while connected):
 - Download files and folders
 - Create / rename / delete via context menu
 - Selection: **Ctrl/⌘+click** and **Shift+click**
-- Double-click a file to edit
+- Double-click opens the right window for the file type:
+  - images → viewer
+  - archives (zip, tar, rar, …) → browse and extract
+  - SQLite / `.db` / `.sql` → **SQL Browse**
+  - everything else → text editor
 - Name filter in the panel header
 - **Pin** the panel on the right
 - Path bar: double-click to edit, **Enter** / **Go** to navigate the tree (**terminal cwd stays unchanged**)
+
+### 🗄️ SQL Browse
+
+Separate window for `.sqlite`, `.sqlite3`, `.db`, `.db3`, `.s3db`, `.sdb`, and `.sql` dumps:
+
+- Tables and views list (views are read-only)
+- Paginated data grid
+- Edit cells, add and delete rows
+- Save changes back to the server (binary SQLite or SQL dump)
+- Unsaved-changes prompt on close
+- For `.sql`, context menu also offers **Open as text**
+
+> Binary `.db` / `.sqlite` files are not opened in the text editor — they are databases, not plain text.
 
 ### 🚚 Transfers
 

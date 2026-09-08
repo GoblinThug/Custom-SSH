@@ -11,6 +11,15 @@ import {
 } from '../archive'
 import { isQuitting, ssh } from '../app-context'
 import { loadRendererPage } from '../load-renderer-page'
+import { SqlBrowseEngine } from '../sql-browse/engine'
+import { sqlKindFromName } from '../sql-browse/files'
+import {
+  disposeSqlBrowseSession,
+  getSqlBrowseSession,
+  setSqlBrowseSession,
+  sqlBrowseKey,
+  type SqlBrowseSession,
+} from '../sql-browse/sessions'
 import {
   appWindowOptions,
   bindWindowChrome,
@@ -22,7 +31,11 @@ let editorReady = false
 let editorPendingTabs: Array<{ sessionId: string; remotePath: string }> = []
 let viewerWindow: BrowserWindow | null = null
 const archiveWindows = new Map<string, BrowserWindow>()
+const sqlBrowseWindows = new Map<string, BrowserWindow>()
 const MAX_ARCHIVE_BYTES = 80 * 1024 * 1024
+const MAX_SQL_BYTES = 80 * 1024 * 1024
+const sqlBrowseInflight = new Map<string, Promise<SqlBrowseSession>>()
+const sqlBrowseLocalPaths = new Map<string, string>()
 
 function flushEditorPendingTabs(win: BrowserWindow) {
   if (win.isDestroyed()) return
@@ -73,6 +86,18 @@ function disposeArchiveCache(key: string) {
 
 function safeTempName(name: string): string {
   return name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_') || 'archive'
+}
+
+function disposeSqlLocal(key: string) {
+  disposeSqlBrowseSession(key)
+  const localPath = sqlBrowseLocalPaths.get(key)
+  sqlBrowseLocalPaths.delete(key)
+  if (!localPath) return
+  try {
+    fs.unlinkSync(localPath)
+  } catch {
+    // already gone
+  }
 }
 
 export async function openArchiveWindow(sessionId: string, remotePath: string) {
@@ -173,6 +198,126 @@ export async function ensureArchiveCached(
 
   archiveInflight.set(key, job)
   return job
+}
+
+export async function openSqlBrowseWindow(
+  sessionId: string,
+  remotePath: string,
+) {
+  const key = sqlBrowseKey(sessionId, remotePath)
+  const existing = sqlBrowseWindows.get(key)
+  if (existing && !existing.isDestroyed()) {
+    existing.focus()
+    return
+  }
+
+  const win = new BrowserWindow(
+    appWindowOptions({
+      width: 1100,
+      height: 720,
+      minWidth: 720,
+      minHeight: 480,
+    }),
+  )
+
+  sqlBrowseWindows.set(key, win)
+  ;(win as BrowserWindow & { __forceClose?: boolean }).__forceClose = false
+  bindWindowChrome(win)
+  win.once('ready-to-show', () => {
+    if (!win.isDestroyed()) void playShowAnimation(win)
+  })
+  win.on('close', (event) => {
+    const sqlWin = win as BrowserWindow & { __forceClose?: boolean }
+    if (isQuitting || sqlWin.__forceClose || win.isDestroyed()) return
+    event.preventDefault()
+    win.webContents.send('sql-browse:close-request')
+  })
+  win.on('closed', () => {
+    sqlBrowseWindows.delete(key)
+    const pending = sqlBrowseInflight.get(key)
+    if (pending) {
+      void pending.finally(() => {
+        if (!sqlBrowseWindows.has(key)) disposeSqlLocal(key)
+      })
+      return
+    }
+    disposeSqlLocal(key)
+  })
+
+  await loadRendererPage(win, 'sql-browse', {
+    sessionId,
+    path: remotePath,
+  })
+}
+
+export async function ensureSqlBrowseOpen(
+  sessionId: string,
+  remotePath: string,
+): Promise<SqlBrowseSession> {
+  const key = sqlBrowseKey(sessionId, remotePath)
+  const hit = getSqlBrowseSession(key)
+  if (hit && fs.existsSync(hit.localPath)) return hit
+  if (hit) disposeSqlLocal(key)
+
+  const pending = sqlBrowseInflight.get(key)
+  if (pending) return pending
+
+  const job = (async () => {
+    const kind = sqlKindFromName(remotePath)
+    if (!kind) throw new Error('SQL_UNSUPPORTED')
+    const size = await ssh.remoteFileSize(sessionId, remotePath)
+    if (size > MAX_SQL_BYTES) throw new Error('SQL_TOO_LARGE')
+
+    const dir = path.join(os.tmpdir(), 'customssh-sql-browse')
+    fs.mkdirSync(dir, { recursive: true })
+    const id = crypto.randomBytes(8).toString('hex')
+    const localPath = path.join(
+      dir,
+      `${id}-${safeTempName(path.basename(remotePath))}`,
+    )
+    try {
+      await ssh.downloadFile(sessionId, remotePath, localPath)
+      const engine = await SqlBrowseEngine.open(localPath, kind)
+      const session: SqlBrowseSession = {
+        key,
+        sessionId,
+        remotePath,
+        localPath,
+        kind,
+        size,
+        name: path.basename(remotePath) || 'database',
+        engine,
+      }
+      sqlBrowseLocalPaths.set(key, localPath)
+      setSqlBrowseSession(session)
+      return session
+    } catch (err) {
+      try {
+        fs.unlinkSync(localPath)
+      } catch {
+        // ignore
+      }
+      throw err
+    }
+  })().finally(() => {
+    sqlBrowseInflight.delete(key)
+  })
+
+  sqlBrowseInflight.set(key, job)
+  return job
+}
+
+export async function saveSqlBrowse(
+  sessionId: string,
+  remotePath: string,
+): Promise<{ ok: true; dirty: false }> {
+  const session = await ensureSqlBrowseOpen(sessionId, remotePath)
+  const payload = session.engine.exportForSave()
+  fs.writeFileSync(session.localPath, payload)
+  await ssh.uploadFile(sessionId, session.localPath, remotePath)
+  session.engine.dirty = false
+  session.size = payload.byteLength
+  return { ok: true as const, dirty: false as const }
 }
 
 export async function openViewerWindow(sessionId: string, remotePath: string) {

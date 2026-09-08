@@ -17,6 +17,7 @@ export default defineConfig({
         editor: path.resolve(__dirname, 'editor.html'),
         viewer: path.resolve(__dirname, 'viewer.html'),
         archive: path.resolve(__dirname, 'archive.html'),
+        'sql-browse': path.resolve(__dirname, 'sql-browse.html'),
       },
     },
   },
@@ -29,7 +30,12 @@ export default defineConfig({
           build: {
             outDir: 'dist-electron',
             rollupOptions: {
-              external: ['ssh2', 'electron-updater', 'node-unrar-js'],
+              external: [
+                'ssh2',
+                'electron-updater',
+                'node-unrar-js',
+                'sql.js',
+              ],
             },
           },
         },

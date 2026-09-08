@@ -107,6 +107,36 @@ export function AudioFileIcon() {
   )
 }
 
+export function SqlDbFileIcon() {
+  return (
+    <svg
+      className="file-tree__file-icon file-tree__file-icon--sql"
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden
+    >
+      <path
+        d="M4 6c0-1.657 3.582-3 8-3s8 1.343 8 3-3.582 3-8 3-8-1.343-8-3Z"
+        stroke="currentColor"
+        strokeWidth="1.6"
+      />
+      <path
+        d="M4 6v6c0 1.657 3.582 3 8 3s8-1.343 8-3V6"
+        stroke="currentColor"
+        strokeWidth="1.6"
+      />
+      <path
+        d="M4 12v6c0 1.657 3.582 3 8 3s8-1.343 8-3v-6"
+        stroke="currentColor"
+        strokeWidth="1.6"
+      />
+    </svg>
+  )
+}
+
 export function ImageFileIcon() {
   return (
     <svg

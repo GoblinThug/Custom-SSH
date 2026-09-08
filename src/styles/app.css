@@ -1348,6 +1348,14 @@ html[data-theme='light'] .ping-pill.is-poor {
   color: var(--text);
 }
 
+.file-tree__file-icon--sql {
+  color: #38bdf8;
+}
+
+.file-tree__row--sql .file-tree__label {
+  color: var(--text);
+}
+
 .file-tree__image-preview {
   position: fixed;
   z-index: 80;

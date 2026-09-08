@@ -7,6 +7,7 @@ import { isImageFile } from '../../imageFiles'
 import { isArchiveFile } from '../../archiveFiles'
 import { isAudioFile } from '../../audioFiles'
 import { isVideoFile } from '../../videoFiles'
+import { isSqlDbFile } from '../../sqlDbFiles'
 import { ChevronIcon } from '../ChevronIcon'
 import {
   ArchiveFileIcon,
@@ -14,6 +15,7 @@ import {
   FileIcon,
   FolderIcon,
   ImageFileIcon,
+  SqlDbFileIcon,
   VideoFileIcon,
 } from './icons'
 import { displayName, entryMatchesFilter, parentChain, parentDir } from './paths'
@@ -201,6 +203,10 @@ export function FileTreeNode({
                     ? ' file-tree__row--archive'
                     : ''
                 }${
+                  isSqlDbFile(entry.name) || isSqlDbFile(entry.path)
+                    ? ' file-tree__row--sql'
+                    : ''
+                }${
                   isAudioFile(entry.name) || isAudioFile(entry.path)
                     ? ' file-tree__row--audio'
                     : ''
@@ -238,6 +244,8 @@ export function FileTreeNode({
                   <ImageFileIcon />
                 ) : isArchiveFile(entry.name) || isArchiveFile(entry.path) ? (
                   <ArchiveFileIcon />
+                ) : isSqlDbFile(entry.name) || isSqlDbFile(entry.path) ? (
+                  <SqlDbFileIcon />
                 ) : isAudioFile(entry.name) || isAudioFile(entry.path) ? (
                   <AudioFileIcon />
                 ) : isVideoFile(entry.name) || isVideoFile(entry.path) ? (

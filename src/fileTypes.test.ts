@@ -3,6 +3,7 @@ import { isArchiveFile } from './archiveFiles'
 import { formatBytes, imageMimeType, isImageFile } from './imageFiles'
 import { isAudioFile } from './audioFiles'
 import { isVideoFile } from './videoFiles'
+import { isSqlDbFile, isSqlDumpFile, sqlDbKindFromName } from './sqlDbFiles'
 
 describe('file type helpers', () => {
   it('detects archives including compound extensions', () => {
@@ -29,5 +30,17 @@ describe('file type helpers', () => {
     expect(isAudioFile('track.txt')).toBe(false)
     expect(isVideoFile('clip.mkv')).toBe(true)
     expect(isVideoFile('clip.png')).toBe(false)
+  })
+
+  it('detects sqlite and sql dump files', () => {
+    expect(isSqlDbFile('data.sqlite')).toBe(true)
+    expect(isSqlDbFile('/var/app.db')).toBe(true)
+    expect(isSqlDbFile('backup.SQL')).toBe(true)
+    expect(isSqlDbFile('notes.txt')).toBe(false)
+    expect(isSqlDumpFile('dump.sql')).toBe(true)
+    expect(isSqlDumpFile('app.db')).toBe(false)
+    expect(sqlDbKindFromName('x.sqlite3')).toBe('binary')
+    expect(sqlDbKindFromName('x.sql')).toBe('sql')
+    expect(sqlDbKindFromName('x.txt')).toBe(null)
   })
 })

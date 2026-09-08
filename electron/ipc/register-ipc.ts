@@ -46,11 +46,16 @@ import {
 } from '../tray/tray-manager'
 import {
   ensureArchiveCached,
+  ensureSqlBrowseOpen,
   notifyEditorReady,
   openArchiveWindow,
   openEditorWindow,
+  openSqlBrowseWindow,
   openViewerWindow,
+  saveSqlBrowse,
 } from '../windows/secondary-windows'
+import { isSqlDbName } from '../sql-browse/files'
+import { requireSqlBrowseSession, sqlBrowseKey } from '../sql-browse/sessions'
 import {
   dragWindowTo,
   endWindowDrag,
@@ -684,9 +689,18 @@ export function registerIpcHandlers() {
 
   ipcMain.handle(
     'editor:open',
-    async (_event, sessionId: string, remotePath: string) => {
-      if (isArchiveName(remotePath)) {
+    async (
+      _event,
+      sessionId: string,
+      remotePath: string,
+      opts?: { asText?: boolean },
+    ) => {
+      if (!opts?.asText && isArchiveName(remotePath)) {
         await openArchiveWindow(sessionId, remotePath)
+        return { ok: true }
+      }
+      if (!opts?.asText && isSqlDbName(remotePath)) {
+        await openSqlBrowseWindow(sessionId, remotePath)
         return { ok: true }
       }
       await openEditorWindow(sessionId, remotePath)
@@ -815,6 +829,110 @@ export function registerIpcHandlers() {
       const opened = await shell.openPath(localFile)
       if (opened) throw new Error(opened)
       return { ok: true as const }
+    },
+  )
+
+  ipcMain.handle(
+    'sql-browse:open',
+    async (_event, sessionId: string, remotePath: string) => {
+      await openSqlBrowseWindow(sessionId, remotePath)
+      return { ok: true }
+    },
+  )
+
+  ipcMain.handle(
+    'sql-browse:meta',
+    async (_event, sessionId: string, remotePath: string) => {
+      const session = await ensureSqlBrowseOpen(sessionId, remotePath)
+      return {
+        name: session.name,
+        size: session.size,
+        kind: session.kind,
+        dirty: session.engine.dirty,
+        tables: session.engine.listTables(),
+      }
+    },
+  )
+
+  ipcMain.handle(
+    'sql-browse:query',
+    async (
+      _event,
+      sessionId: string,
+      remotePath: string,
+      table: string,
+      limit: number,
+      offset: number,
+    ) => {
+      const session = await ensureSqlBrowseOpen(sessionId, remotePath)
+      return session.engine.queryRows(table, limit, offset)
+    },
+  )
+
+  ipcMain.handle(
+    'sql-browse:update',
+    async (
+      _event,
+      sessionId: string,
+      remotePath: string,
+      table: string,
+      rowid: number,
+      column: string,
+      value: unknown,
+    ) => {
+      const session = await ensureSqlBrowseOpen(sessionId, remotePath)
+      session.engine.updateCell(table, rowid, column, value)
+      return { ok: true as const, dirty: session.engine.dirty }
+    },
+  )
+
+  ipcMain.handle(
+    'sql-browse:insert',
+    async (
+      _event,
+      sessionId: string,
+      remotePath: string,
+      table: string,
+      values: Record<string, unknown>,
+    ) => {
+      const session = await ensureSqlBrowseOpen(sessionId, remotePath)
+      const rowid = session.engine.insertRow(table, values)
+      return { ok: true as const, rowid, dirty: session.engine.dirty }
+    },
+  )
+
+  ipcMain.handle(
+    'sql-browse:delete',
+    async (
+      _event,
+      sessionId: string,
+      remotePath: string,
+      table: string,
+      rowids: number[],
+    ) => {
+      const session = await ensureSqlBrowseOpen(sessionId, remotePath)
+      const count = session.engine.deleteRows(table, rowids)
+      return { ok: true as const, count, dirty: session.engine.dirty }
+    },
+  )
+
+  ipcMain.handle(
+    'sql-browse:save',
+    async (_event, sessionId: string, remotePath: string) => {
+      return saveSqlBrowse(sessionId, remotePath)
+    },
+  )
+
+  ipcMain.handle(
+    'sql-browse:dirty',
+    async (_event, sessionId: string, remotePath: string) => {
+      const key = sqlBrowseKey(sessionId, remotePath)
+      try {
+        const session = requireSqlBrowseSession(key)
+        return { dirty: session.engine.dirty }
+      } catch {
+        return { dirty: false }
+      }
     },
   )
 

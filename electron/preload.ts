@@ -285,8 +285,9 @@ const api = {
   openEditorWindow: (
     sessionId: string,
     remotePath: string,
+    opts?: { asText?: boolean },
   ): Promise<{ ok: boolean }> =>
-    ipcRenderer.invoke('editor:open', sessionId, remotePath),
+    ipcRenderer.invoke('editor:open', sessionId, remotePath, opts),
   openViewerWindow: (
     sessionId: string,
     remotePath: string,
@@ -297,6 +298,96 @@ const api = {
     remotePath: string,
   ): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('archive:open', sessionId, remotePath),
+  openSqlBrowseWindow: (
+    sessionId: string,
+    remotePath: string,
+  ): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('sql-browse:open', sessionId, remotePath),
+  sqlBrowseMeta: (
+    sessionId: string,
+    remotePath: string,
+  ): Promise<{
+    name: string
+    size: number
+    kind: 'binary' | 'sql'
+    dirty: boolean
+    tables: Array<{ name: string; type: 'table' | 'view' }>
+  }> => ipcRenderer.invoke('sql-browse:meta', sessionId, remotePath),
+  sqlBrowseQuery: (
+    sessionId: string,
+    remotePath: string,
+    table: string,
+    limit: number,
+    offset: number,
+  ): Promise<{
+    columns: string[]
+    rows: Array<Record<string, unknown>>
+    total: number
+    offset: number
+    limit: number
+    readonly: boolean
+  }> =>
+    ipcRenderer.invoke(
+      'sql-browse:query',
+      sessionId,
+      remotePath,
+      table,
+      limit,
+      offset,
+    ),
+  sqlBrowseUpdate: (
+    sessionId: string,
+    remotePath: string,
+    table: string,
+    rowid: number,
+    column: string,
+    value: unknown,
+  ): Promise<{ ok: boolean; dirty: boolean }> =>
+    ipcRenderer.invoke(
+      'sql-browse:update',
+      sessionId,
+      remotePath,
+      table,
+      rowid,
+      column,
+      value,
+    ),
+  sqlBrowseInsert: (
+    sessionId: string,
+    remotePath: string,
+    table: string,
+    values: Record<string, unknown>,
+  ): Promise<{ ok: boolean; rowid: number; dirty: boolean }> =>
+    ipcRenderer.invoke(
+      'sql-browse:insert',
+      sessionId,
+      remotePath,
+      table,
+      values,
+    ),
+  sqlBrowseDelete: (
+    sessionId: string,
+    remotePath: string,
+    table: string,
+    rowids: number[],
+  ): Promise<{ ok: boolean; count: number; dirty: boolean }> =>
+    ipcRenderer.invoke(
+      'sql-browse:delete',
+      sessionId,
+      remotePath,
+      table,
+      rowids,
+    ),
+  sqlBrowseSave: (
+    sessionId: string,
+    remotePath: string,
+  ): Promise<{ ok: boolean; dirty: boolean }> =>
+    ipcRenderer.invoke('sql-browse:save', sessionId, remotePath),
+  sqlBrowseDirty: (
+    sessionId: string,
+    remotePath: string,
+  ): Promise<{ dirty: boolean }> =>
+    ipcRenderer.invoke('sql-browse:dirty', sessionId, remotePath),
   archiveList: (
     sessionId: string,
     remotePath: string,
@@ -460,6 +551,13 @@ const api = {
     ipcRenderer.on('archive:close-request', listener)
     return () => {
       ipcRenderer.removeListener('archive:close-request', listener)
+    }
+  },
+  onSqlBrowseCloseRequest: (callback: () => void) => {
+    const listener = () => callback()
+    ipcRenderer.on('sql-browse:close-request', listener)
+    return () => {
+      ipcRenderer.removeListener('sql-browse:close-request', listener)
     }
   },
   onWindowCloseRequest: (callback: () => void) => {
