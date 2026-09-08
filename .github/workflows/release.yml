@@ -23,6 +23,7 @@ concurrency:
 
 permissions:
   contents: write
+  actions: write
 
 env:
   NODE_VERSION: '22'
