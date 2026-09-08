@@ -17,10 +17,34 @@ import {
   playShowAnimation,
 } from '../window-chrome'
 
-const editorWindows = new Map<string, BrowserWindow>()
+let editorWindow: BrowserWindow | null = null
+let editorReady = false
+let editorPendingTabs: Array<{ sessionId: string; remotePath: string }> = []
 let viewerWindow: BrowserWindow | null = null
 const archiveWindows = new Map<string, BrowserWindow>()
 const MAX_ARCHIVE_BYTES = 80 * 1024 * 1024
+
+function flushEditorPendingTabs(win: BrowserWindow) {
+  if (win.isDestroyed()) return
+  const pending = editorPendingTabs
+  editorPendingTabs = []
+  for (const item of pending) {
+    win.webContents.send('editor:open-tab', item)
+  }
+}
+
+function sendEditorOpenTab(
+  win: BrowserWindow,
+  sessionId: string,
+  remotePath: string,
+) {
+  const payload = { sessionId, remotePath }
+  if (editorReady && !win.webContents.isLoadingMainFrame()) {
+    win.webContents.send('editor:open-tab', payload)
+    return
+  }
+  editorPendingTabs.push(payload)
+}
 
 type ArchiveCache = {
   localPath: string
@@ -191,12 +215,15 @@ export async function openViewerWindow(sessionId: string, remotePath: string) {
 }
 
 export async function openEditorWindow(sessionId: string, remotePath: string) {
-  const existing = editorWindows.get(sessionId)
+  const existing = editorWindow
   if (existing && !existing.isDestroyed()) {
     existing.focus()
-    existing.webContents.send('editor:open-tab', { remotePath })
+    sendEditorOpenTab(existing, sessionId, remotePath)
     return
   }
+
+  editorReady = false
+  editorPendingTabs = []
 
   const win = new BrowserWindow(
     appWindowOptions({
@@ -207,7 +234,7 @@ export async function openEditorWindow(sessionId: string, remotePath: string) {
     }),
   )
 
-  editorWindows.set(sessionId, win)
+  editorWindow = win
   ;(win as BrowserWindow & { __forceClose?: boolean }).__forceClose = false
   bindWindowChrome(win)
   win.once('ready-to-show', () => {
@@ -219,12 +246,29 @@ export async function openEditorWindow(sessionId: string, remotePath: string) {
     event.preventDefault()
     win.webContents.send('editor:close-request')
   })
+  win.webContents.on('did-finish-load', () => {
+    if (editorWindow !== win || win.isDestroyed()) return
+    editorReady = true
+    flushEditorPendingTabs(win)
+  })
   win.on('closed', () => {
-    editorWindows.delete(sessionId)
+    if (editorWindow === win) {
+      editorWindow = null
+      editorReady = false
+      editorPendingTabs = []
+    }
   })
 
   await loadRendererPage(win, 'editor', {
     sessionId,
     path: remotePath,
   })
+}
+
+/** Called by the editor renderer after it subscribed to open-tab events. */
+export function notifyEditorReady(webContentsId: number) {
+  const win = editorWindow
+  if (!win || win.isDestroyed() || win.webContents.id !== webContentsId) return
+  editorReady = true
+  flushEditorPendingTabs(win)
 }

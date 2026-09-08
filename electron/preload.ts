@@ -421,10 +421,15 @@ const api = {
       ipcRenderer.removeListener('editor:close-request', listener)
     }
   },
-  onEditorOpenTab: (callback: (payload: { remotePath: string }) => void) => {
+  editorReady: () => {
+    ipcRenderer.send('editor:ready')
+  },
+  onEditorOpenTab: (
+    callback: (payload: { sessionId: string; remotePath: string }) => void,
+  ) => {
     const listener = (
       _event: Electron.IpcRendererEvent,
-      payload: { remotePath: string },
+      payload: { sessionId: string; remotePath: string },
     ) => callback(payload)
     ipcRenderer.on('editor:open-tab', listener)
     return () => {

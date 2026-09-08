@@ -11,6 +11,13 @@ type Props = {
   onChange: (value: string) => void
 }
 
+const BASIC_SETUP = {
+  lineNumbers: true,
+  foldGutter: true,
+  highlightActiveLine: true,
+  autocompletion: true,
+} as const
+
 export function EditorCodeMirror({
   tabId,
   value,
@@ -25,12 +32,7 @@ export function EditorCodeMirror({
       height="100%"
       theme={theme === 'light' ? 'light' : oneDark}
       extensions={extensions}
-      basicSetup={{
-        lineNumbers: true,
-        foldGutter: true,
-        highlightActiveLine: true,
-        autocompletion: true,
-      }}
+      basicSetup={BASIC_SETUP}
       onChange={onChange}
       className="editor-codemirror"
     />

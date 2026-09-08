@@ -46,6 +46,7 @@ import {
 } from '../tray/tray-manager'
 import {
   ensureArchiveCached,
+  notifyEditorReady,
   openArchiveWindow,
   openEditorWindow,
   openViewerWindow,
@@ -692,6 +693,10 @@ export function registerIpcHandlers() {
       return { ok: true }
     },
   )
+
+  ipcMain.on('editor:ready', (event) => {
+    notifyEditorReady(event.sender.id)
+  })
 
   ipcMain.handle(
     'viewer:open',

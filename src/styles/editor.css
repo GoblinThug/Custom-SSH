@@ -18,8 +18,8 @@
 }
 
 .editor-shell {
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   height: 100%;
   min-height: 0;
   background: var(--bg-panel);
@@ -33,6 +33,7 @@
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-toolbar);
+  flex-shrink: 0;
 }
 
 .editor-toolbar__meta {
@@ -59,6 +60,7 @@
   font-weight: 600;
   line-height: 1;
   vertical-align: middle;
+  min-width: 9.5rem;
 }
 
 .editor-save-badge.is-saved {
@@ -103,11 +105,20 @@ html[data-theme='light'] .editor-save-badge.is-unsaved {
 
 .editor-error {
   margin: 10px 16px 0;
+  flex-shrink: 0;
 }
 
 .editor-body {
+  flex: 1;
   min-height: 0;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-body .editor-codemirror {
+  flex: 1;
+  min-height: 0;
 }
 
 .editor-loading {

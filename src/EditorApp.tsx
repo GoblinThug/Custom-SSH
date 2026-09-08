@@ -74,10 +74,11 @@ function UnsavedIcon() {
 
 export function EditorApp() {
   const { t, theme } = useSettings()
-  const { sessionId, remotePath: initialPath } = useMemo(() => readWindowQuery(), [])
+  const initialQuery = useMemo(() => readWindowQuery(), [])
+  const [sessionId, setSessionId] = useState(() => initialQuery.sessionId)
   const [langExt, setLangExt] = useState<Extension | null>(null)
   const [tabs, setTabs] = useState<EditorTab[]>(() =>
-    initialPath ? [createTab(initialPath)] : [],
+    initialQuery.remotePath ? [createTab(initialQuery.remotePath)] : [],
   )
   const [activeId, setActiveId] = useState(() => tabs[0]?.id ?? '')
   const [saving, setSaving] = useState(false)
@@ -85,16 +86,18 @@ export function EditorApp() {
   const [closeTarget, setCloseTarget] = useState<'window' | string>('window')
   const tabsRef = useRef(tabs)
   const activeIdRef = useRef(activeId)
+  const sessionIdRef = useRef(sessionId)
 
   tabsRef.current = tabs
   activeIdRef.current = activeId
+  sessionIdRef.current = sessionId
 
   const activeTab = tabs.find((tab) => tab.id === activeId) ?? tabs[0]
   const dirty = activeTab ? activeTab.content !== activeTab.original : false
 
   const loadTab = useCallback(
-    async (tabId: string, remotePath: string) => {
-      if (!sessionId || !remotePath) {
+    async (tabId: string, remotePath: string, sid = sessionIdRef.current) => {
+      if (!sid || !remotePath) {
         setTabs((prev) =>
           prev.map((tab) =>
             tab.id === tabId
@@ -110,7 +113,7 @@ export function EditorApp() {
         ),
       )
       try {
-        const file = await window.sshApi.fsRead(sessionId, remotePath)
+        const file = await window.sshApi.fsRead(sid, remotePath)
         setTabs((prev) =>
           prev.map((tab) =>
             tab.id === tabId
@@ -137,11 +140,15 @@ export function EditorApp() {
         )
       }
     },
-    [sessionId, t],
+    [t],
   )
 
   const openTab = useCallback(
-    (remotePath: string) => {
+    (remotePath: string, nextSessionId?: string) => {
+      if (nextSessionId && nextSessionId !== sessionIdRef.current) {
+        setSessionId(nextSessionId)
+        sessionIdRef.current = nextSessionId
+      }
       const existing = tabsRef.current.find((tab) => tab.remotePath === remotePath)
       if (existing) {
         setActiveId(existing.id)
@@ -150,20 +157,22 @@ export function EditorApp() {
       const tab = createTab(remotePath)
       setTabs((prev) => [...prev, tab])
       setActiveId(tab.id)
-      void loadTab(tab.id, remotePath)
+      void loadTab(tab.id, remotePath, nextSessionId ?? sessionIdRef.current)
     },
     [loadTab],
   )
 
   useEffect(() => {
-    if (!initialPath || tabs.length === 0) return
-    void loadTab(tabs[0].id, initialPath)
+    if (!initialQuery.remotePath || tabs.length === 0) return
+    void loadTab(tabs[0].id, initialQuery.remotePath)
   }, [])
 
   useEffect(() => {
-    return window.sshApi.onEditorOpenTab(({ remotePath }) => {
-      openTab(remotePath)
+    const off = window.sshApi.onEditorOpenTab(({ sessionId: nextSessionId, remotePath }) => {
+      openTab(remotePath, nextSessionId)
     })
+    window.sshApi.editorReady()
+    return off
   }, [openTab])
 
   useEffect(() => {
@@ -193,7 +202,7 @@ export function EditorApp() {
   }, [activeTab?.remotePath])
 
   const extensions = useMemo(() => {
-    if (!activeTab) return []
+    if (!activeTab?.remotePath) return []
     const next = [
       EditorState.tabSize.of(TAB_SIZE),
       indentUnit.of(' '.repeat(TAB_SIZE)),
@@ -206,12 +215,20 @@ export function EditorApp() {
       next.push(syntaxColorExtension(theme === 'light' ? 'light' : 'dark'))
     }
     return next
-  }, [activeTab, langExt, t, theme])
+  }, [activeTab?.remotePath, langExt, t, theme])
+
+  const onEditorChange = useCallback((value: string) => {
+    const tabId = activeIdRef.current
+    setTabs((prev) =>
+      prev.map((tab) => (tab.id === tabId ? { ...tab, content: value } : tab)),
+    )
+  }, [])
 
   const saveTab = useCallback(
     async (tabId: string) => {
       const tab = tabsRef.current.find((item) => item.id === tabId)
-      if (!tab || !sessionId || saving) return false
+      const sid = sessionIdRef.current
+      if (!tab || !sid || saving) return false
       setSaving(true)
       setTabs((prev) =>
         prev.map((item) =>
@@ -219,7 +236,7 @@ export function EditorApp() {
         ),
       )
       try {
-        await window.sshApi.fsWrite(sessionId, tab.remotePath, tab.content)
+        await window.sshApi.fsWrite(sid, tab.remotePath, tab.content)
         setTabs((prev) =>
           prev.map((item) =>
             item.id === tabId ? { ...item, original: item.content } : item,
@@ -242,7 +259,7 @@ export function EditorApp() {
         setSaving(false)
       }
     },
-    [saving, sessionId, t],
+    [saving, t],
   )
 
   const forceClose = useCallback(async () => {
@@ -428,11 +445,10 @@ export function EditorApp() {
               </div>
             </div>
 
-            {activeTab.error ? (
-              <div className="error-box editor-error">{activeTab.error}</div>
-            ) : null}
-
             <div className="editor-body" role="tabpanel">
+              {activeTab.error ? (
+                <div className="error-box editor-error">{activeTab.error}</div>
+              ) : null}
               {activeTab.loading ? (
                 <div className="editor-loading">
                   <ProgressBar indeterminate label={t('loading')} />
@@ -444,13 +460,7 @@ export function EditorApp() {
                     value={activeTab.content}
                     theme={theme}
                     extensions={extensions}
-                    onChange={(value) => {
-                      setTabs((prev) =>
-                        prev.map((tab) =>
-                          tab.id === activeTab.id ? { ...tab, content: value } : tab,
-                        ),
-                      )
-                    }}
+                    onChange={onEditorChange}
                   />
                 </Suspense>
               )}
