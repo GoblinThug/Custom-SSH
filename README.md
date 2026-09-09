@@ -72,6 +72,10 @@
   <img src="docs/screenshots/autoupdates.png" alt="Автообновления" width="390" />
 </p>
 
+<p align="center">
+  <img src="docs/screenshots/sql-browse.png" alt="Обзор SQL" width="800" />
+</p>
+
 ## ⬇️ Скачать и установить
 
 Готовые сборки: **[GitHub Releases →](https://github.com/GoblinThug/Custom-SSH/releases)**
@@ -360,6 +364,9 @@ Repo version: **`4.4.0`** (always check [Releases](https://github.com/GoblinThug
   <img src="docs/screenshots/autoupdates.png" alt="Auto-updates" width="390" />
 </p>
 
+<p align="center">
+  <img src="docs/screenshots/sql-browse.png" alt="SQL-Browse" width="800" />
+</p>
 ## ⬇️ Download & install
 
 Prebuilt packages: **[GitHub Releases →](https://github.com/GoblinThug/Custom-SSH/releases)**
