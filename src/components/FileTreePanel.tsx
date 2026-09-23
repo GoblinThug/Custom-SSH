@@ -1170,7 +1170,10 @@ export function FileTreePanel({
             <div className="file-tree__hint">{t('fileSelectHint')}</div>
           ) : null}
           {sessionId ? (
-            <div onClick={(event) => event.stopPropagation()}>
+            <div
+              className="file-tree"
+              onClick={(event) => event.stopPropagation()}
+            >
               <FileTreeNode
                 path="/"
                 depth={0}

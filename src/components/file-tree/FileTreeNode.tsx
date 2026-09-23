@@ -20,6 +20,21 @@ import {
 } from './icons'
 import { displayName, entryMatchesFilter, parentChain, parentDir } from './paths'
 
+const INDENT_STEP = 14
+const MAX_VISUAL_DEPTH = 8
+
+function folderIndent(depth: number) {
+  return 10 + Math.min(depth, MAX_VISUAL_DEPTH) * INDENT_STEP
+}
+
+function fileIndent(parentDepth: number) {
+  return 24 + (Math.min(parentDepth, MAX_VISUAL_DEPTH) + 1) * INDENT_STEP
+}
+
+function metaIndent(depth: number) {
+  return 28 + Math.min(depth, MAX_VISUAL_DEPTH) * INDENT_STEP
+}
+
 export function FileTreeNode({
   path,
   depth,
@@ -99,7 +114,7 @@ export function FileTreeNode({
           folderSelected ? ' is-selected' : ''
         }${isDropTarget ? ' is-drop-target' : ''}`}
         data-tree-path={path}
-        style={{ paddingLeft: 10 + depth * 14 }}
+        style={{ paddingLeft: folderIndent(depth) }}
         draggable={canDragFolder}
         onDragStart={(event) => {
           if (!canDragFolder) {
@@ -157,7 +172,7 @@ export function FileTreeNode({
           {loading && !kids ? (
             <div
               className="file-tree__meta"
-              style={{ paddingLeft: 28 + depth * 14 }}
+              style={{ paddingLeft: metaIndent(depth) }}
             >
               {loadingLabel}
             </div>
@@ -215,7 +230,7 @@ export function FileTreeNode({
                     ? ' file-tree__row--video'
                     : ''
                 }${selectedPaths.has(entry.path) ? ' is-selected' : ''}`}
-                style={{ paddingLeft: 24 + (depth + 1) * 14 }}
+                style={{ paddingLeft: fileIndent(depth) }}
                 title={entry.path}
                 draggable
                 onDragStart={(event) => onEntryDragStart(entry, event)}
@@ -260,7 +275,7 @@ export function FileTreeNode({
           {kids && kids.length === 0 ? (
             <div
               className="file-tree__meta"
-              style={{ paddingLeft: 28 + depth * 14 }}
+              style={{ paddingLeft: metaIndent(depth) }}
             >
               {emptyLabel}
             </div>
@@ -272,7 +287,7 @@ export function FileTreeNode({
           filterQuery.trim() ? (
             <div
               className="file-tree__meta"
-              style={{ paddingLeft: 28 + depth * 14 }}
+              style={{ paddingLeft: metaIndent(depth) }}
             >
               {emptyLabel}
             </div>
