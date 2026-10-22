@@ -2,6 +2,8 @@
 
 .editor-app {
   height: 100%;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .editor-tabs {
@@ -37,16 +39,22 @@
 }
 
 .editor-toolbar__meta {
+  flex: 1 1 auto;
   min-width: 0;
+  overflow: hidden;
 }
 
 .editor-toolbar__name {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
   font-size: 14px;
   font-weight: 600;
   color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .editor-save-badge {
@@ -88,6 +96,8 @@ html[data-theme='light'] .editor-save-badge.is-unsaved {
 
 .editor-toolbar__path {
   margin-top: 2px;
+  min-width: 0;
+  max-width: 100%;
   font-size: 12px;
   color: var(--text-secondary);
   font-family: var(--font-mono);

@@ -1,4 +1,10 @@
-import { useMemo, useState, type CSSProperties } from 'react'
+import {
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type DragEvent,
+} from 'react'
 import { FOLDER_COLORS, folderColorValue } from '../folderColors'
 import { useSettings } from '../i18n/SettingsContext'
 import { ChevronIcon } from './ChevronIcon'
@@ -7,6 +13,8 @@ import type {
   FolderColor,
   SavedConnection,
 } from '../types'
+
+const DROP_UNGROUPED = '__ungrouped__'
 
 type Props = {
   folders: ConnectionFolder[]
@@ -49,8 +57,43 @@ export function Sidebar({
   const [renameValue, setRenameValue] = useState('')
   const [colorPickerId, setColorPickerId] = useState<string | null>(null)
   const [menuConnectionId, setMenuConnectionId] = useState<string | null>(null)
+  const [draggingConnectionId, setDraggingConnectionId] = useState<string | null>(
+    null,
+  )
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null)
+  const draggingConnectionIdRef = useRef<string | null>(null)
 
   const q = query.trim().toLowerCase()
+
+  const clearDragState = () => {
+    draggingConnectionIdRef.current = null
+    setDraggingConnectionId(null)
+    setDropTargetId(null)
+  }
+
+  const acceptConnectionDrop = (e: DragEvent, folderId: string | null) => {
+    e.preventDefault()
+    const connectionId =
+      e.dataTransfer.getData('text/plain') || draggingConnectionIdRef.current
+    if (!connectionId) return
+    const connection = connections.find((item) => item.id === connectionId)
+    if (!connection || connection.folderId === folderId) {
+      clearDragState()
+      return
+    }
+    onMoveConnection(connectionId, folderId)
+    if (folderId) {
+      setCollapsed((prev) => ({ ...prev, [folderId]: false }))
+    }
+    clearDragState()
+  }
+
+  const onFolderDragOver = (e: DragEvent, folderId: string | null) => {
+    if (!draggingConnectionIdRef.current) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    setDropTargetId(folderId ?? DROP_UNGROUPED)
+  }
 
   const filtered = useMemo(() => {
     if (!q) return connections
@@ -81,7 +124,18 @@ export function Sidebar({
   const renderConnection = (item: SavedConnection) => (
     <div
       key={item.id}
-      className={`connection-row${selectedId === item.id ? ' is-active' : ''}`}
+      className={`connection-row${selectedId === item.id ? ' is-active' : ''}${
+        draggingConnectionId === item.id ? ' is-dragging' : ''
+      }`}
+      draggable={menuConnectionId !== item.id}
+      onDragStart={(e) => {
+        e.dataTransfer.effectAllowed = 'move'
+        e.dataTransfer.setData('text/plain', item.id)
+        draggingConnectionIdRef.current = item.id
+        setDraggingConnectionId(item.id)
+        setMenuConnectionId(null)
+      }}
+      onDragEnd={clearDragState}
     >
       <button
         type="button"
@@ -269,10 +323,18 @@ export function Sidebar({
 
           const color = folderColorValue(folder.color)
 
+          const isDropTarget = dropTargetId === folder.id
+
           return (
             <div
               key={folder.id}
-              className="folder-block"
+              className={`folder-block${isDropTarget ? ' is-drop-target' : ''}`}
+              onDragOver={(e) => onFolderDragOver(e, folder.id)}
+              onDragLeave={(e) => {
+                if (e.currentTarget.contains(e.relatedTarget as Node)) return
+                if (dropTargetId === folder.id) setDropTargetId(null)
+              }}
+              onDrop={(e) => acceptConnectionDrop(e, folder.id)}
               style={
                 {
                   '--folder-color': color,
@@ -449,7 +511,17 @@ export function Sidebar({
         })}
 
         {(ungrouped.length > 0 || folders.length > 0) && (!q || ungrouped.length > 0) ? (
-          <div className="folder-block">
+          <div
+            className={`folder-block${
+              dropTargetId === DROP_UNGROUPED ? ' is-drop-target' : ''
+            }`}
+            onDragOver={(e) => onFolderDragOver(e, null)}
+            onDragLeave={(e) => {
+              if (e.currentTarget.contains(e.relatedTarget as Node)) return
+              if (dropTargetId === DROP_UNGROUPED) setDropTargetId(null)
+            }}
+            onDrop={(e) => acceptConnectionDrop(e, null)}
+          >
             <div className="folder-row folder-row--muted">
               <span className="folder-row__toggle is-static">
                 <ChevronIcon open />
