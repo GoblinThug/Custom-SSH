@@ -303,6 +303,8 @@ export function TerminalView({
   const hotkeysRef = useRef<HotkeysSettings>(settings.hotkeys)
   const lastReconnectNoteRef = useRef(0)
   const wasReconnectingRef = useRef(false)
+  const activeRef = useRef(active)
+  activeRef.current = active
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const searchOpenRef = useRef(false)
@@ -331,6 +333,21 @@ export function TerminalView({
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [active])
+
+  /** Keep keyboard focus on the visible tab; blur hidden ones so they cannot steal input. */
+  useEffect(() => {
+    const term = termRef.current
+    if (!term) return
+    if (!active) {
+      term.blur()
+      return
+    }
+    if (showEmpty || searchOpen) return
+    requestAnimationFrame(() => {
+      if (!activeRef.current) return
+      term.focus()
+    })
+  }, [active, showEmpty, searchOpen])
 
   useEffect(() => {
     tRef.current = t
@@ -472,18 +489,27 @@ export function TerminalView({
     term.open(containerRef.current)
 
     const syncSize = () => {
+      // Never fit/resize a hidden tab — zero geometry freezes the remote PTY
+      // until a later visible fit restores cols/rows (looks like a "dead" terminal).
+      if (!activeRef.current) return
       fit.fit()
+      const cols = term.cols
+      const rows = term.rows
+      if (cols < 2 || rows < 1) return
       if (sessionRef.current && shellRef.current) {
         window.sshApi.resize(
           sessionRef.current,
-          term.cols,
-          term.rows,
+          cols,
+          rows,
           shellRef.current,
         )
       }
     }
 
-    requestAnimationFrame(syncSize)
+    requestAnimationFrame(() => {
+      syncSize()
+      if (activeRef.current) term.focus()
+    })
 
     termRef.current = term
     fitRef.current = fit
@@ -863,30 +889,27 @@ export function TerminalView({
   }, [searchQuery, searchOpen])
 
   useEffect(() => {
-    const term = termRef.current
-    const fit = fitRef.current
-    if (!term || !fit || !sessionId || !shellId) return
-    requestAnimationFrame(() => {
-      fit.fit()
-      window.sshApi.resize(sessionId, term.cols, term.rows, shellId)
-    })
-  }, [sessionId, shellId])
-
-  useEffect(() => {
     if (showEmpty || !active) return
     const fit = fitRef.current
     const term = termRef.current
     if (!fit || !term) return
     requestAnimationFrame(() => {
+      if (!activeRef.current) return
       fit.fit()
-      if (sessionId && shellId) {
+      // Force a paint after hide→show; fit() alone no-ops when cols/rows match.
+      term.refresh(0, Math.max(0, term.rows - 1))
+      if (sessionId && shellId && term.cols >= 2 && term.rows >= 1) {
         window.sshApi.resize(sessionId, term.cols, term.rows, shellId)
       }
     })
   }, [showEmpty, sessionId, shellId, active])
 
   return (
-    <div className={`terminal-wrap${active ? '' : ' is-hidden'}`}>
+    <div
+      className={`terminal-wrap${active ? '' : ' is-hidden'}`}
+      inert={!active ? true : undefined}
+      aria-hidden={!active}
+    >
       {showEmpty ? (
         <div className="terminal-empty">
           <h2>{t('readyToConnect')}</h2>

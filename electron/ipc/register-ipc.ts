@@ -42,6 +42,7 @@ import {
   hideMainToTray,
   refreshTrayChrome,
   setTrayPopupState,
+  showMainWindow,
   type TrayPopupState,
 } from '../tray/tray-manager'
 import {
@@ -693,7 +694,7 @@ export function registerIpcHandlers() {
       _event,
       sessionId: string,
       remotePath: string,
-      opts?: { asText?: boolean },
+      opts?: { asText?: boolean; connectionId?: string },
     ) => {
       if (!opts?.asText && isArchiveName(remotePath)) {
         await openArchiveWindow(sessionId, remotePath)
@@ -703,7 +704,9 @@ export function registerIpcHandlers() {
         await openSqlBrowseWindow(sessionId, remotePath)
         return { ok: true }
       }
-      await openEditorWindow(sessionId, remotePath)
+      await openEditorWindow(sessionId, remotePath, {
+        connectionId: opts?.connectionId,
+      })
       return { ok: true }
     },
   )
@@ -711,6 +714,68 @@ export function registerIpcHandlers() {
   ipcMain.on('editor:ready', (event) => {
     notifyEditorReady(event.sender.id)
   })
+
+  const editorRestoreReplies = new Map<
+    string,
+    (result: {
+      ok: boolean
+      sessionId?: string
+      reason?: 'unavailable' | 'timeout'
+    }) => void
+  >()
+
+  ipcMain.handle(
+    'editor:restoreConnection',
+    async (
+      _event,
+      payload: { sessionId?: string; connectionId?: string },
+    ) => {
+      showMainWindow()
+      const win = mainWindow
+      if (!win || win.isDestroyed()) {
+        return { ok: false as const, reason: 'unavailable' as const }
+      }
+
+      const replyId = crypto.randomUUID()
+      return await new Promise<{
+        ok: boolean
+        sessionId?: string
+        reason?: 'unavailable' | 'timeout'
+      }>((resolve) => {
+        const timer = setTimeout(() => {
+          editorRestoreReplies.delete(replyId)
+          resolve({ ok: false, reason: 'timeout' })
+        }, 60_000)
+
+        editorRestoreReplies.set(replyId, (result) => {
+          clearTimeout(timer)
+          editorRestoreReplies.delete(replyId)
+          resolve(result)
+        })
+
+        win.webContents.send('editor:restore-connection', {
+          replyId,
+          sessionId: payload.sessionId ?? '',
+          connectionId: payload.connectionId ?? '',
+        })
+      })
+    },
+  )
+
+  ipcMain.on(
+    'editor:restore-connection-reply',
+    (
+      _event,
+      replyId: string,
+      result: {
+        ok: boolean
+        sessionId?: string
+        reason?: 'unavailable' | 'timeout'
+      },
+    ) => {
+      editorRestoreReplies.get(replyId)?.(result)
+    },
+  )
 
   ipcMain.handle(
     'viewer:open',

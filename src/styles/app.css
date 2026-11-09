@@ -586,7 +586,7 @@
   flex-direction: column;
   align-items: stretch;
   gap: 4px;
-  min-width: 112px;
+  width: max-content;
 }
 
 .toolbar__status-progress {
@@ -760,9 +760,19 @@ html[data-theme='light'] .ping-pill.is-poor {
 
 .terminal-stack__views > .terminal-wrap {
   height: 100%;
+  position: relative;
+  z-index: 1;
 }
 
-
+.terminal-stack__views > .terminal-wrap.is-hidden {
+  /* Keep mounted for scrollback; hide inactive tabs. */
+  visibility: hidden;
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  height: auto;
+  z-index: 0;
+}
 
 .panel {
   min-height: 0;
@@ -820,15 +830,6 @@ html[data-theme='light'] .ping-pill.is-poor {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-}
-
-.terminal-stack__views > .terminal-wrap.is-hidden {
-  /* Keep mounted for scrollback; hide inactive tabs. */
-  visibility: hidden;
-  pointer-events: none;
-  position: absolute;
-  inset: 0;
-  height: auto;
 }
 
 .terminal-empty {

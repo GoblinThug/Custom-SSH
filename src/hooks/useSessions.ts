@@ -368,6 +368,8 @@ export function useSessions({
     const tab = tabsRef.current.find((item) => item.key === tabKey)
     syncDraftFromTab(tab)
   }
+  const activateTabRef = useRef(activateTab)
+  activateTabRef.current = activateTab
 
   const isSameActiveTarget = (
     tab: TerminalTab,
@@ -398,7 +400,7 @@ export function useSessions({
   const handleConnect = async (
     sourceDraft: ConnectionDraft,
     opts?: { openNewTab?: boolean },
-  ) => {
+  ): Promise<string | null> => {
     const openNewTab = !!opts?.openNewTab
     const saved = connections.find((item) => item.id === sourceDraft.id)
     const validationError = validate(sourceDraft, saved)
@@ -407,7 +409,7 @@ export function useSessions({
       setDraft(sourceDraft)
       setEditOpen(true)
       setError(t(validationError))
-      return
+      return null
     }
 
     const payload: ConnectPayload = {
@@ -432,7 +434,7 @@ export function useSessions({
         sameReconnectResolverRef.current = resolve
         setSameReconnectPrompt({ target: current.label || label })
       })
-      if (!proceed) return
+      if (!proceed) return null
     }
 
     setSelectedId(sourceDraft.id)
@@ -502,8 +504,8 @@ export function useSessions({
     try {
       const result = await window.sshApi.connect(nextSessionId, payload)
       if (!result.ok) {
-        if ('cancelled' in result && result.cancelled) return
-        if (!('error' in result)) return
+        if ('cancelled' in result && result.cancelled) return null
+        if (!('error' in result)) return null
         const message = formatAppError(
           { message: result.error },
           t,
@@ -516,7 +518,7 @@ export function useSessions({
           tabNow.sessionId !== nextSessionId ||
           (runtime && runtime.connectToken !== connectToken)
         ) {
-          return
+          return null
         }
         if (runtime) {
           runtime.wantConnected = false
@@ -532,7 +534,7 @@ export function useSessions({
         }
         setError(message)
         setBusy(false)
-        return
+        return null
       }
       const runtime = sessionsRef.current.get(nextSessionId)
       const tabNow = tabsRef.current.find((item) => item.key === tabKey)
@@ -542,7 +544,7 @@ export function useSessions({
         !tabNow ||
         tabNow.sessionId !== nextSessionId
       ) {
-        return
+        return null
       }
       runtime.autoReconnect = true
       runtime.wantConnected = true
@@ -580,9 +582,10 @@ export function useSessions({
           applyWorkspace(workspace)
         }
       }
+      return nextSessionId
     } catch (err) {
       const message = formatAppError(err, t, 'errConnectFailed')
-      if (/connection cancelled/i.test(message)) return
+      if (/connection cancelled/i.test(message)) return null
       const runtime = sessionsRef.current.get(nextSessionId)
       const tabNow = tabsRef.current.find((item) => item.key === tabKey)
       if (
@@ -590,7 +593,7 @@ export function useSessions({
         tabNow.sessionId !== nextSessionId ||
         (runtime && runtime.connectToken !== connectToken)
       ) {
-        return
+        return null
       }
       if (runtime) {
         runtime.wantConnected = false
@@ -606,6 +609,7 @@ export function useSessions({
       }
       setError(message)
       setBusy(false)
+      return null
     }
   }
 
@@ -614,6 +618,88 @@ export function useSessions({
   }
   const handleSidebarConnectRef = useRef(handleSidebarConnect)
   handleSidebarConnectRef.current = handleSidebarConnect
+  const handleConnectRef = useRef(handleConnect)
+  handleConnectRef.current = handleConnect
+
+  const isLiveTab = (tab: TerminalTab) =>
+    tab.status === 'connected' ||
+    tab.status === 'connecting' ||
+    tab.status === 'reconnecting'
+
+  useEffect(() => {
+    return window.sshApi.onEditorRestoreConnection((payload) => {
+      void (async () => {
+        const reply = (result: {
+          ok: boolean
+          sessionId?: string
+          reason?: 'unavailable' | 'timeout'
+        }) => {
+          window.sshApi.replyEditorRestoreConnection(payload.replyId, result)
+        }
+
+        try {
+          const sessionId = payload.sessionId.trim()
+          const connectionId = payload.connectionId.trim()
+
+          const bySession = sessionId
+            ? tabsRef.current.find(
+                (tab) => tab.sessionId === sessionId && isLiveTab(tab),
+              )
+            : undefined
+          if (bySession) {
+            activateTabRef.current(bySession.key)
+            reply({ ok: true, sessionId: bySession.sessionId })
+            return
+          }
+
+          const byConnection = connectionId
+            ? tabsRef.current.find(
+                (tab) => tab.connectionId === connectionId && isLiveTab(tab),
+              )
+            : undefined
+          if (byConnection) {
+            activateTabRef.current(byConnection.key)
+            reply({ ok: true, sessionId: byConnection.sessionId })
+            return
+          }
+
+          let resolvedConnectionId = connectionId
+          if (!resolvedConnectionId && sessionId) {
+            resolvedConnectionId =
+              sessionsRef.current.get(sessionId)?.connectionId ??
+              tabsRef.current.find((tab) => tab.sessionId === sessionId)
+                ?.connectionId ??
+              ''
+          }
+
+          if (!resolvedConnectionId) {
+            reply({ ok: false, reason: 'unavailable' })
+            return
+          }
+
+          const connection = connectionsRef.current.find(
+            (item) => item.id === resolvedConnectionId,
+          )
+          if (!connection) {
+            reply({ ok: false, reason: 'unavailable' })
+            return
+          }
+
+          const nextSessionId = await handleConnectRef.current(
+            toDraft(connection),
+            { openNewTab: true },
+          )
+          if (!nextSessionId) {
+            reply({ ok: false, reason: 'unavailable' })
+            return
+          }
+          reply({ ok: true, sessionId: nextSessionId })
+        } catch {
+          reply({ ok: false, reason: 'unavailable' })
+        }
+      })()
+    })
+  }, [connectionsRef])
 
   const handleDisconnect = () => {
     const tab = activeTab

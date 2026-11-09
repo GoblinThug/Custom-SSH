@@ -1,29 +1,29 @@
 import type { AppLocale } from '../types'
 import type { MessageKey } from './messageKeys'
-import { ru } from './messages/ru'
+import { en } from './messages/en'
 
 export type { MessageKey } from './messageKeys'
 
 const catalogs: Partial<Record<AppLocale, Record<MessageKey, string>>> = {
-  ru,
+  en,
 }
 
-let enPromise: Promise<Record<MessageKey, string>> | null = null
+let ruPromise: Promise<Record<MessageKey, string>> | null = null
 
 export async function ensureLocale(locale: AppLocale): Promise<void> {
-  if (locale === 'ru' || catalogs[locale]) return
-  if (locale === 'en') {
-    if (!enPromise) {
-      enPromise = import('./messages/en').then((mod) => {
-        catalogs.en = mod.en
-        return mod.en
+  if (locale === 'en' || catalogs[locale]) return
+  if (locale === 'ru') {
+    if (!ruPromise) {
+      ruPromise = import('./messages/ru').then((mod) => {
+        catalogs.ru = mod.ru
+        return mod.ru
       })
     }
-    await enPromise
+    await ruPromise
   }
 }
 
 export function translate(locale: AppLocale, key: MessageKey): string {
-  const cat = catalogs[locale] ?? catalogs.ru
-  return cat?.[key] ?? catalogs.ru?.[key] ?? key
+  const cat = catalogs[locale] ?? catalogs.en
+  return cat?.[key] ?? catalogs.en?.[key] ?? key
 }

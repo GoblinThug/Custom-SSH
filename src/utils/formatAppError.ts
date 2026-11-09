@@ -215,6 +215,15 @@ const MESSAGE_RULES: Array<{ re: RegExp; key: MessageKey }> = [
   },
 ]
 
+/** True when the SSH session is gone / dropped and needs reconnect. */
+export function isSessionUnavailableError(err: unknown): boolean {
+  const message = unwrapErrorMessage(err)
+  if (!message) return false
+  return /session not found|session did not recover|connection lost|broken pipe|channel closed|premature (eof|close)|no response from server|econnreset|connection reset|socket hang up|unexpected socket close|not connected/i.test(
+    message,
+  )
+}
+
 /**
  * Map SSH / FS / IPC errors to a short localized string.
  * Unknown messages fall back to `fallback` (or cleaned raw text if none).

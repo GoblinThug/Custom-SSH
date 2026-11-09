@@ -15,7 +15,10 @@ import {
 import { ProgressBar } from './components/ProgressBar'
 import { EditorSkeleton } from './components/skeleton/EditorSkeleton'
 import { useSettings } from './i18n/SettingsContext'
-import { formatAppError } from './utils/formatAppError'
+import {
+  formatAppError,
+  isSessionUnavailableError,
+} from './utils/formatAppError'
 import { readWindowQuery } from './utils/windowQuery'
 import { TAB_SIZE } from './types'
 
@@ -32,6 +35,7 @@ type EditorTab = {
   original: string
   loading: boolean
   error?: string
+  sessionLost?: boolean
 }
 
 function fileNameOf(remotePath: string) {
@@ -76,21 +80,27 @@ export function EditorApp() {
   const { t, theme } = useSettings()
   const initialQuery = useMemo(() => readWindowQuery(), [])
   const [sessionId, setSessionId] = useState(() => initialQuery.sessionId)
+  const [connectionId, setConnectionId] = useState(
+    () => initialQuery.connectionId,
+  )
   const [langExt, setLangExt] = useState<Extension | null>(null)
   const [tabs, setTabs] = useState<EditorTab[]>(() =>
     initialQuery.remotePath ? [createTab(initialQuery.remotePath)] : [],
   )
   const [activeId, setActiveId] = useState(() => tabs[0]?.id ?? '')
   const [saving, setSaving] = useState(false)
+  const [restoring, setRestoring] = useState(false)
   const [closePromptOpen, setClosePromptOpen] = useState(false)
   const [closeTarget, setCloseTarget] = useState<'window' | string>('window')
   const tabsRef = useRef(tabs)
   const activeIdRef = useRef(activeId)
   const sessionIdRef = useRef(sessionId)
+  const connectionIdRef = useRef(connectionId)
 
   tabsRef.current = tabs
   activeIdRef.current = activeId
   sessionIdRef.current = sessionId
+  connectionIdRef.current = connectionId
 
   const activeTab = tabs.find((tab) => tab.id === activeId) ?? tabs[0]
   const dirty = activeTab ? activeTab.content !== activeTab.original : false
@@ -101,7 +111,12 @@ export function EditorApp() {
         setTabs((prev) =>
           prev.map((tab) =>
             tab.id === tabId
-              ? { ...tab, loading: false, error: t('editorMissingParams') }
+              ? {
+                  ...tab,
+                  loading: false,
+                  error: t('editorMissingParams'),
+                  sessionLost: false,
+                }
               : tab,
           ),
         )
@@ -109,7 +124,9 @@ export function EditorApp() {
       }
       setTabs((prev) =>
         prev.map((tab) =>
-          tab.id === tabId ? { ...tab, loading: true, error: undefined } : tab,
+          tab.id === tabId
+            ? { ...tab, loading: true, error: undefined, sessionLost: false }
+            : tab,
         ),
       )
       try {
@@ -122,6 +139,8 @@ export function EditorApp() {
                   content: file.content,
                   original: file.content,
                   loading: false,
+                  error: undefined,
+                  sessionLost: false,
                 }
               : tab,
           ),
@@ -134,6 +153,7 @@ export function EditorApp() {
                   ...tab,
                   loading: false,
                   error: formatAppError(err, t, 'editorLoadFailed'),
+                  sessionLost: isSessionUnavailableError(err),
                 }
               : tab,
           ),
@@ -144,10 +164,18 @@ export function EditorApp() {
   )
 
   const openTab = useCallback(
-    (remotePath: string, nextSessionId?: string) => {
+    (
+      remotePath: string,
+      nextSessionId?: string,
+      nextConnectionId?: string,
+    ) => {
       if (nextSessionId && nextSessionId !== sessionIdRef.current) {
         setSessionId(nextSessionId)
         sessionIdRef.current = nextSessionId
+      }
+      if (nextConnectionId && nextConnectionId !== connectionIdRef.current) {
+        setConnectionId(nextConnectionId)
+        connectionIdRef.current = nextConnectionId
       }
       const existing = tabsRef.current.find((tab) => tab.remotePath === remotePath)
       if (existing) {
@@ -168,12 +196,72 @@ export function EditorApp() {
   }, [])
 
   useEffect(() => {
-    const off = window.sshApi.onEditorOpenTab(({ sessionId: nextSessionId, remotePath }) => {
-      openTab(remotePath, nextSessionId)
-    })
+    const off = window.sshApi.onEditorOpenTab(
+      ({
+        sessionId: nextSessionId,
+        remotePath,
+        connectionId: nextConnectionId,
+      }) => {
+        openTab(remotePath, nextSessionId, nextConnectionId)
+      },
+    )
     window.sshApi.editorReady()
     return off
   }, [openTab])
+
+  const restoreConnection = useCallback(async () => {
+    if (restoring) return
+    setRestoring(true)
+    try {
+      const result = await window.sshApi.restoreEditorConnection({
+        sessionId: sessionIdRef.current || undefined,
+        connectionId: connectionIdRef.current || undefined,
+      })
+      if (!result.ok || !result.sessionId) {
+        setTabs((prev) =>
+          prev.map((tab) =>
+            tab.id === activeIdRef.current
+              ? {
+                  ...tab,
+                  error: t('editorRestoreUnavailable'),
+                  sessionLost: true,
+                }
+              : tab,
+          ),
+        )
+        return
+      }
+      setSessionId(result.sessionId)
+      sessionIdRef.current = result.sessionId
+      const tab = tabsRef.current.find((item) => item.id === activeIdRef.current)
+      if (!tab) return
+      if (!tab.content) {
+        void loadTab(tab.id, tab.remotePath, result.sessionId)
+        return
+      }
+      setTabs((prev) =>
+        prev.map((item) =>
+          item.id === tab.id
+            ? { ...item, error: undefined, sessionLost: false }
+            : item,
+        ),
+      )
+    } catch {
+      setTabs((prev) =>
+        prev.map((tab) =>
+          tab.id === activeIdRef.current
+            ? {
+                ...tab,
+                error: t('editorRestoreUnavailable'),
+                sessionLost: true,
+              }
+            : tab,
+        ),
+      )
+    } finally {
+      setRestoring(false)
+    }
+  }, [loadTab, restoring, t])
 
   useEffect(() => {
     if (!activeTab) {
@@ -232,14 +320,18 @@ export function EditorApp() {
       setSaving(true)
       setTabs((prev) =>
         prev.map((item) =>
-          item.id === tabId ? { ...item, error: undefined } : item,
+          item.id === tabId
+            ? { ...item, error: undefined, sessionLost: false }
+            : item,
         ),
       )
       try {
         await window.sshApi.fsWrite(sid, tab.remotePath, tab.content)
         setTabs((prev) =>
           prev.map((item) =>
-            item.id === tabId ? { ...item, original: item.content } : item,
+            item.id === tabId
+              ? { ...item, original: item.content, sessionLost: false }
+              : item,
           ),
         )
         return true
@@ -250,6 +342,7 @@ export function EditorApp() {
               ? {
                   ...item,
                   error: formatAppError(err, t, 'editorSaveFailed'),
+                  sessionLost: isSessionUnavailableError(err),
                 }
               : item,
           ),
@@ -447,7 +540,21 @@ export function EditorApp() {
 
             <div className="editor-body" role="tabpanel">
               {activeTab.error ? (
-                <div className="error-box editor-error">{activeTab.error}</div>
+                <div className="error-box editor-error">
+                  <div className="editor-error__text">{activeTab.error}</div>
+                  {activeTab.sessionLost ? (
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      disabled={restoring || activeTab.loading || saving}
+                      onClick={() => void restoreConnection()}
+                    >
+                      {restoring
+                        ? t('editorRestoringConnection')
+                        : t('editorRestoreConnection')}
+                    </button>
+                  ) : null}
+                </div>
               ) : null}
               {activeTab.loading ? (
                 <div className="editor-loading">

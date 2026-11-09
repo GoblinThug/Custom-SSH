@@ -255,18 +255,22 @@ export default function App() {
     })
   }, [sessions.tabs, workspace.connections, workspace.folders])
 
+  const hasTerminalSessions = sessions.tabs.length > 0
   const status =
-    sessions.activeTab?.status ?? (sessions.tabs.length > 0 ? 'connected' : 'idle')
+    sessions.activeTab?.status ?? (hasTerminalSessions ? 'connected' : 'idle')
   const reconnectAttempt = sessions.activeTab?.reconnectAttempt ?? 0
-  const toolbarLabel =
-    (sessions.activeTab?.label && sessions.activeTab.label.trim()) ||
-    connectionLabelOf(draft) ||
-    undefined
-  const toolbarTitle =
-    (sessions.activeTab?.title && sessions.activeTab.title.trim()) ||
-    draft.name.trim() ||
-    toolbarLabel ||
-    t('untitledConnection')
+  // When no terminal is open, don't keep showing the last connection in the toolbar.
+  const toolbarLabel = hasTerminalSessions
+    ? (sessions.activeTab?.label && sessions.activeTab.label.trim()) ||
+      connectionLabelOf(draft) ||
+      undefined
+    : undefined
+  const toolbarTitle = hasTerminalSessions
+    ? (sessions.activeTab?.title && sessions.activeTab.title.trim()) ||
+      draft.name.trim() ||
+      toolbarLabel ||
+      t('untitledConnection')
+    : t('noActiveConnection')
 
   const statusLabel =
     status === 'idle'
@@ -297,8 +301,6 @@ export default function App() {
     sessions.activeTab.status === 'connected' &&
     sessions.sessionsRef.current.get(sessions.activeTab.sessionId)?.protocol ===
       'ssh'
-
-  const hasTerminalSessions = sessions.tabs.length > 0
 
   return (
     <div className="app">
@@ -511,6 +513,11 @@ export default function App() {
                 sessionId={
                   sessions.activeTab?.status === 'connected'
                     ? sessions.activeTab.sessionId
+                    : null
+                }
+                connectionId={
+                  sessions.activeTab?.status === 'connected'
+                    ? sessions.activeTab.connectionId
                     : null
                 }
                 onClose={() => setTreeOpen(false)}

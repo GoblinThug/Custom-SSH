@@ -285,9 +285,47 @@ const api = {
   openEditorWindow: (
     sessionId: string,
     remotePath: string,
-    opts?: { asText?: boolean },
+    opts?: { asText?: boolean; connectionId?: string },
   ): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('editor:open', sessionId, remotePath, opts),
+  restoreEditorConnection: (payload: {
+    sessionId?: string
+    connectionId?: string
+  }): Promise<{
+    ok: boolean
+    sessionId?: string
+    reason?: 'unavailable' | 'timeout'
+  }> => ipcRenderer.invoke('editor:restoreConnection', payload),
+  replyEditorRestoreConnection: (
+    replyId: string,
+    result: {
+      ok: boolean
+      sessionId?: string
+      reason?: 'unavailable' | 'timeout'
+    },
+  ) => {
+    ipcRenderer.send('editor:restore-connection-reply', replyId, result)
+  },
+  onEditorRestoreConnection: (
+    callback: (payload: {
+      replyId: string
+      sessionId: string
+      connectionId: string
+    }) => void,
+  ) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      payload: {
+        replyId: string
+        sessionId: string
+        connectionId: string
+      },
+    ) => callback(payload)
+    ipcRenderer.on('editor:restore-connection', listener)
+    return () => {
+      ipcRenderer.removeListener('editor:restore-connection', listener)
+    }
+  },
   openViewerWindow: (
     sessionId: string,
     remotePath: string,
@@ -518,11 +556,19 @@ const api = {
     ipcRenderer.send('editor:ready')
   },
   onEditorOpenTab: (
-    callback: (payload: { sessionId: string; remotePath: string }) => void,
+    callback: (payload: {
+      sessionId: string
+      remotePath: string
+      connectionId?: string
+    }) => void,
   ) => {
     const listener = (
       _event: Electron.IpcRendererEvent,
-      payload: { sessionId: string; remotePath: string },
+      payload: {
+        sessionId: string
+        remotePath: string
+        connectionId?: string
+      },
     ) => callback(payload)
     ipcRenderer.on('editor:open-tab', listener)
     return () => {

@@ -45,6 +45,7 @@ type Props = {
   open: boolean
   pinned: boolean
   sessionId: string | null
+  connectionId?: string | null
   onClose: () => void
   onPinnedChange: (pinned: boolean) => void
   onNavigate?: (remotePath: string) => void
@@ -54,6 +55,7 @@ export function FileTreePanel({
   open,
   pinned,
   sessionId,
+  connectionId,
   onClose,
   onPinnedChange,
   onNavigate,
@@ -61,6 +63,8 @@ export function FileTreePanel({
   const { t } = useSettings()
   const [cwd, setCwd] = useState('/')
   const [expanded, setExpanded] = useState<Set<string>>(new Set(['/']))
+  const expandedRef = useRef(expanded)
+  expandedRef.current = expanded
   const [childrenMap, setChildrenMap] = useState<Record<string, RemoteFsEntry[]>>(
     {},
   )
@@ -212,30 +216,37 @@ export function FileTreePanel({
     [sessionId, t],
   )
 
-  const refresh = useCallback(async () => {
-    const loadFor = sessionId
-    if (!loadFor) return
-    setBusy(true)
-    setError(undefined)
-    try {
-      const remoteCwd = await window.sshApi.fsCwd(loadFor)
-      if (sessionIdRef.current !== loadFor) return
-      setCwd(remoteCwd)
-      const chain = parentChain(remoteCwd)
-      setExpanded(new Set(chain))
-      setChildrenMap({})
-      setSelectedPaths(new Set())
-      lastSelectedRef.current = null
-      await Promise.all(chain.map((path) => loadDir(path)))
-    } catch (err) {
-      if (sessionIdRef.current !== loadFor) return
-      setError(formatAppError(err, t, 'errFileOpFailed'))
-    } finally {
-      if (sessionIdRef.current === loadFor) {
-        setBusy(false)
+  const refresh = useCallback(
+    async (options?: { preserveExpanded?: boolean }) => {
+      const loadFor = sessionId
+      if (!loadFor) return
+      setBusy(true)
+      setError(undefined)
+      try {
+        const remoteCwd = await window.sshApi.fsCwd(loadFor)
+        if (sessionIdRef.current !== loadFor) return
+        setCwd(remoteCwd)
+        const chain = parentChain(remoteCwd)
+        const pathsToLoad = new Set(
+          options?.preserveExpanded ? expandedRef.current : [],
+        )
+        for (const path of chain) pathsToLoad.add(path)
+        setExpanded(pathsToLoad)
+        setChildrenMap({})
+        setSelectedPaths(new Set())
+        lastSelectedRef.current = null
+        await Promise.all(Array.from(pathsToLoad).map((path) => loadDir(path)))
+      } catch (err) {
+        if (sessionIdRef.current !== loadFor) return
+        setError(formatAppError(err, t, 'errFileOpFailed'))
+      } finally {
+        if (sessionIdRef.current === loadFor) {
+          setBusy(false)
+        }
       }
-    }
-  }, [sessionId, loadDir, t])
+    },
+    [sessionId, loadDir, t],
+  )
 
   useEffect(() => {
     if (open && sessionId) {
@@ -368,7 +379,10 @@ export function FileTreePanel({
     if (!sessionId) return
     setActionNote(undefined)
     try {
-      await window.sshApi.openEditorWindow(sessionId, remotePath, opts)
+      await window.sshApi.openEditorWindow(sessionId, remotePath, {
+        ...opts,
+        ...(connectionId ? { connectionId } : {}),
+      })
     } catch (err) {
       setError(formatAppError(err, t, 'editorLoadFailed'))
     }
@@ -939,6 +953,7 @@ export function FileTreePanel({
       : [
           ...(singleDir
             ? [
+                { id: 'refresh', label: t('refresh') },
                 { id: 'upload', label: t('fileUploadHere') },
                 { id: 'mkfile', label: t('fileNewFile') },
                 { id: 'mkdir', label: t('fileNewFolder') },
@@ -973,7 +988,9 @@ export function FileTreePanel({
         ]
 
     const action = await window.sshApi.showFileActionsMenu({ items })
-    if (action === 'viewImage' && targets[0] && !entry.isDir) {
+    if (action === 'refresh' && entry.isDir) {
+      void refreshDir(entry.path)
+    } else if (action === 'viewImage' && targets[0] && !entry.isDir) {
       void openViewer(targets[0])
     } else if (action === 'openArchive' && targets[0] && !entry.isDir) {
       void openArchive(targets[0])
@@ -1244,7 +1261,7 @@ export function FileTreePanel({
             <button
               type="button"
               className="btn btn-secondary"
-              onClick={() => void refresh()}
+              onClick={() => void refresh({ preserveExpanded: true })}
               disabled={!sessionId || busy}
               title={t('refresh')}
             >

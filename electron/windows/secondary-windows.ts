@@ -28,7 +28,11 @@ import {
 
 let editorWindow: BrowserWindow | null = null
 let editorReady = false
-let editorPendingTabs: Array<{ sessionId: string; remotePath: string }> = []
+let editorPendingTabs: Array<{
+  sessionId: string
+  remotePath: string
+  connectionId?: string
+}> = []
 let viewerWindow: BrowserWindow | null = null
 const archiveWindows = new Map<string, BrowserWindow>()
 const sqlBrowseWindows = new Map<string, BrowserWindow>()
@@ -50,8 +54,13 @@ function sendEditorOpenTab(
   win: BrowserWindow,
   sessionId: string,
   remotePath: string,
+  connectionId?: string,
 ) {
-  const payload = { sessionId, remotePath }
+  const payload = {
+    sessionId,
+    remotePath,
+    ...(connectionId ? { connectionId } : {}),
+  }
   if (editorReady && !win.webContents.isLoadingMainFrame()) {
     win.webContents.send('editor:open-tab', payload)
     return
@@ -359,11 +368,16 @@ export async function openViewerWindow(sessionId: string, remotePath: string) {
   })
 }
 
-export async function openEditorWindow(sessionId: string, remotePath: string) {
+export async function openEditorWindow(
+  sessionId: string,
+  remotePath: string,
+  opts?: { connectionId?: string },
+) {
+  const connectionId = opts?.connectionId?.trim() || undefined
   const existing = editorWindow
   if (existing && !existing.isDestroyed()) {
     existing.focus()
-    sendEditorOpenTab(existing, sessionId, remotePath)
+    sendEditorOpenTab(existing, sessionId, remotePath, connectionId)
     return
   }
 
@@ -407,6 +421,7 @@ export async function openEditorWindow(sessionId: string, remotePath: string) {
   await loadRendererPage(win, 'editor', {
     sessionId,
     path: remotePath,
+    ...(connectionId ? { connectionId } : {}),
   })
 }
 

@@ -66,7 +66,7 @@ export interface RemoteFsEntry {
   size?: number
 }
 
-export const APP_LOCALE_IDS = ['ru', 'en'] as const
+export const APP_LOCALE_IDS = ['en', 'ru'] as const
 export type AppLocale = (typeof APP_LOCALE_IDS)[number]
 export type AppTheme = 'dark' | 'light'
 
@@ -131,7 +131,7 @@ export interface AppSettings {
 
 export function defaultSettings(): AppSettings {
   return {
-    locale: 'ru',
+    locale: 'en',
     theme: 'dark',
     hotkeys: defaultHotkeys(),
     skippedUpdateVersion: null,
